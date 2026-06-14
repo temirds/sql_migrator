@@ -94,10 +94,6 @@ def update_yaml_file_name(event) -> None:
     refresh_output_paths()
 
 
-def update_use_empty_dbt_run(event) -> None:
-    state.use_empty_dbt_run = bool(event.value)
-
-
 def convert_sql() -> None:
     result = convert_oracle_to_starrocks(state.oracle_sql)
     resolved = resolve_tables(result.sql, state.project_dir, config)
@@ -206,9 +202,8 @@ def save_and_dbt_run() -> None:
     if not save_files():
         return
     set_status("Running dbt run...")
-    args = ["run", "--select", state.model_name]
-    if state.use_empty_dbt_run:
-        args.append("--empty")
+    state.use_empty_dbt_run = True
+    args = ["run", "--select", state.model_name, "--empty"]
     code, output = run_dbt(state.project_dir, args)
     state.logs.append(output)
     refresh_logs()
@@ -381,6 +376,8 @@ ui.add_css(
     .tree-input .q-field__native {
         color: var(--jb-text);
         font-size: 13px;
+        padding-left: 12px !important;
+        padding-right: 12px !important;
     }
 
     .field-label,
@@ -541,11 +538,6 @@ with ui.column().classes("w-full min-h-screen p-6 gap-5"):
         ui.button("dbt parse", on_click=dbt_parse).props("flat no-caps dense").classes("action-button secondary-action px-4")
         ui.button("Save", on_click=save_files).props("flat no-caps dense").classes("action-button secondary-action px-4")
         ui.button("Save + dbt run", on_click=save_and_dbt_run).props("flat no-caps dense").classes("action-button secondary-action px-4")
-        ui.checkbox(
-            "Use --empty",
-            value=state.use_empty_dbt_run,
-            on_change=update_use_empty_dbt_run,
-        ).classes("text-sm text-gray-300")
         status_label = ui.label(DEFAULT_STATUS).classes("status-chip")
 
     with ui.column().classes("w-full max-w-5xl gap-3 output-section"):

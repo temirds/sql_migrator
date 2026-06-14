@@ -14,7 +14,7 @@ Main flow:
 5. Tool prepares output folder, SQL file name, YAML file name.
 6. User can save SQL + YAML.
 7. User can run dbt parse.
-8. User can run dbt run or dbt run --empty for the generated model.
+8. User can run dbt run --empty for the generated model.
 
 ## Tech stack
 
@@ -66,7 +66,6 @@ Current layout must stay:
    * dbt parse
    * Save
    * Save + dbt run
-   * Use --empty checkbox
    * compact status chip
 3. Output structure block below actions.
 4. Warnings and Logs panels below output structure.
@@ -127,6 +126,7 @@ Important UI fixes already requested:
 * Output structure should look like an IDE file tree;
 * Warnings/Logs text must have left/top padding;
 * file tree inputs must have right padding and not touch the panel edge.
+* Output structure inputs must have left/right internal padding so text does not touch field edges.
 
 ## Output structure
 
@@ -281,7 +281,8 @@ Buttons:
 
 * `dbt parse`
 * `Save + dbt run`
-* `Use --empty` checkbox
+
+There is no `Use --empty` checkbox in the UI.
 
 For all dbt commands, logs must include:
 
@@ -304,10 +305,9 @@ Also log current PATH.
 
 `Save + dbt run`:
 
-* if `Use --empty` is checked:
+* always runs:
   `dbt run --select <model_name> --empty`
-* otherwise:
-  `dbt run --select <model_name>`
+* if state still has `use_empty`, it may remain internally, but UI behavior must always treat it as enabled.
 
 ## Oracle to StarRocks conversion rules
 
