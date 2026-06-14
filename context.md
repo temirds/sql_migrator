@@ -23,7 +23,7 @@ Main flow:
 - CodeMirror via `ui.codemirror`
 - sqlglot
 - pyyaml
-- dbt project: `../dbt_fs`
+- dbt project: sibling `dbt_fs` next to `sql_migrator`
 
 Do not use Streamlit.
 
@@ -170,6 +170,18 @@ Internal state should still keep:
 * base_object
 * target_schema
 
+Default dbt project path:
+
+* do not hardcode a user-specific absolute path;
+* do not use the process current working directory as the primary source;
+* compute the default project directory from the `sql_migrator` folder:
+  `sql_migrator_dir = Path(__file__).resolve().parent`;
+  `repo_root = sql_migrator_dir.parent`;
+  `default_project_dir = repo_root / "dbt_fs"`;
+* `sql_migrator` and `dbt_fs` are sibling folders under `airflow-repo`;
+* config may override `project_dir`, but missing config uses the sibling `dbt_fs`;
+* default Base path is `default_project_dir / "models"`, unless a persisted `last_base_path` exists.
+
 Base path persistence:
 
 * store the last manually entered Base path in `state.last_base_path`;
@@ -303,15 +315,30 @@ There is no `Use --empty` checkbox in the UI.
 For all dbt commands, logs must include:
 
 * cwd;
-* command args;
 * command text;
+* Python executable;
+* platform;
+* PATH;
 * return code;
 * stdout;
 * stderr;
 * error if any.
+Before awaiting the dbt process, append a start log with cwd, command text, Python executable, and PATH so the UI shows what is running immediately.
+After completion, append the full command result with return code, stdout, stderr, and error.
+Logs must also include `project_dir: <computed path>`.
 
 dbt commands in NiceGUI button handlers must run through async subprocess APIs.
 Do not call blocking `subprocess.run` from UI event handlers, because it blocks the NiceGUI event loop and causes `Connection lost. Trying to reconnect...`.
+On Windows, run dbt exactly like a user does in a terminal: use `asyncio.create_subprocess_shell` with a command string, not list args via `create_subprocess_exec`.
+The dbt command cwd must be the resolved dbt project directory, e.g. `<airflow-repo>/dbt_fs`, not `sql_migrator`.
+Use command text:
+
+```text
+dbt parse
+dbt run --select <model_name> --empty
+```
+
+If command startup fails, logs must include `type(exc).__name__`, `str(exc)`, `repr(exc)`, and `traceback.format_exc()`.
 
 If dbt executable is not found:
 show clear message:

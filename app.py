@@ -3,20 +3,27 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import os
+import platform
 from pathlib import Path
-import shlex
+import sys
+import traceback
 
 from nicegui import ui
 
 from converter import convert_oracle_to_starrocks, format_sql
 from dbt_resolver import load_config, resolve_tables
 from file_utils import build_file_fields, resolve_path, save_model_files
-from state import AppState, DEFAULT_STATUS, load_persistent_state, save_persistent_state
+from state import (
+    AppState,
+    DEFAULT_STATUS,
+    get_default_project_dir,
+    load_persistent_state,
+    save_persistent_state,
+)
 
 
 @dataclass
 class CommandResult:
-    command_args: list[str]
     command_text: str
     cwd: str
     return_code: int | None
@@ -27,8 +34,8 @@ class CommandResult:
 
 state = AppState()
 config = load_config()
-state.project_dir = config.get("project_dir", state.project_dir)
-default_base_path = str(Path(state.project_dir) / "models")
+state.project_dir = str(config.get("project_dir") or get_default_project_dir())
+default_base_path = str(resolve_path(state.project_dir) / "models")
 persistent_state, persistent_warning = load_persistent_state()
 state.last_base_path = str(persistent_state.get("last_base_path") or default_base_path)
 state.base_path = state.last_base_path
@@ -62,12 +69,10 @@ def refresh_logs() -> None:
     set_value(logs_area, logs_text)
 
 
-async def run_command_async(command: list[str], cwd: Path) -> CommandResult:
-    command_text = " ".join(shlex.quote(arg) for arg in command)
-
+async def run_shell_command_async(command_text: str, cwd: Path) -> CommandResult:
     try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
+        process = await asyncio.create_subprocess_shell(
+            command_text,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -75,45 +80,37 @@ async def run_command_async(command: list[str], cwd: Path) -> CommandResult:
         )
         stdout_bytes, stderr_bytes = await process.communicate()
         return CommandResult(
-            command_args=command,
             command_text=command_text,
             cwd=str(cwd),
             return_code=process.returncode,
             stdout=stdout_bytes.decode("utf-8", errors="replace"),
             stderr=stderr_bytes.decode("utf-8", errors="replace"),
         )
-    except FileNotFoundError as exc:
-        return CommandResult(
-            command_args=command,
-            command_text=command_text,
-            cwd=str(cwd),
-            return_code=None,
-            stdout="",
-            stderr="",
-            error=(
-                "dbt executable not found. Check that dbt is installed and available in PATH.\n"
-                f"PATH={os.environ.get('PATH', '')}\n"
-                f"{exc}"
-            ),
-        )
     except Exception as exc:
+        error_text = (
+            f"{type(exc).__name__}: {exc}\n"
+            + f"repr: {exc!r}\n"
+            + f"traceback:\n{traceback.format_exc()}"
+        )
         return CommandResult(
-            command_args=command,
             command_text=command_text,
             cwd=str(cwd),
             return_code=None,
             stdout="",
             stderr="",
-            error=f"dbt command error: {exc}",
+            error=error_text,
         )
 
 
 def format_command_log(result: CommandResult) -> str:
     return "\n".join(
         [
+            f"project_dir: {result.cwd}",
             f"cwd: {result.cwd}",
-            f"command args: {result.command_args!r}",
             f"command text: {result.command_text}",
+            f"python executable: {sys.executable}",
+            f"platform: {platform.platform()}",
+            f"PATH: {os.environ.get('PATH', '')}",
             f"return code: {result.return_code}",
             "stdout:",
             result.stdout.strip(),
@@ -125,8 +122,29 @@ def format_command_log(result: CommandResult) -> str:
     )
 
 
-async def run_dbt_async(args: list[str]) -> tuple[int | None, str]:
-    result = await run_command_async(["dbt", *args], resolve_path(state.project_dir))
+def format_command_start_log(command_text: str, cwd: Path) -> str:
+    return "\n".join(
+        [
+            f"project_dir: {cwd}",
+            f"cwd: {cwd}",
+            f"command text: {command_text}",
+            f"python executable: {sys.executable}",
+            f"PATH: {os.environ.get('PATH', '')}",
+            "started",
+        ]
+    )
+
+
+def dbt_command_text(args: list[str]) -> str:
+    return "dbt " + " ".join(args)
+
+
+def dbt_project_dir() -> Path:
+    return resolve_path(state.project_dir)
+
+
+async def run_dbt_async(command_text: str, cwd: Path) -> tuple[int | None, str]:
+    result = await run_shell_command_async(command_text, cwd)
     return result.return_code, format_command_log(result)
 
 
@@ -283,10 +301,17 @@ def save_files() -> bool:
 
 async def dbt_parse() -> None:
     set_status("Running dbt parse...")
-    code, output = await run_dbt_async(["parse"])
+    command_text = dbt_command_text(["parse"])
+    cwd = dbt_project_dir()
+    state.logs.append(format_command_start_log(command_text, cwd))
+    refresh_logs()
+    code, output = await run_dbt_async(command_text, cwd)
     state.logs.append(output)
     refresh_logs()
-    set_status("dbt parse finished" if code == 0 else "dbt parse failed")
+    if code == 0:
+        set_status("dbt parse finished")
+    else:
+        set_status("dbt parse failed", "error")
 
 
 async def save_and_dbt_run() -> None:
@@ -295,10 +320,17 @@ async def save_and_dbt_run() -> None:
     set_status("Running dbt run...")
     state.use_empty_dbt_run = True
     args = ["run", "--select", state.model_name, "--empty"]
-    code, output = await run_dbt_async(args)
+    command_text = dbt_command_text(args)
+    cwd = dbt_project_dir()
+    state.logs.append(format_command_start_log(command_text, cwd))
+    refresh_logs()
+    code, output = await run_dbt_async(command_text, cwd)
     state.logs.append(output)
     refresh_logs()
-    set_status("dbt run finished" if code == 0 else "dbt run failed")
+    if code == 0:
+        set_status("dbt run finished")
+    else:
+        set_status("dbt run failed", "error")
 
 
 ui.page_title("SQL Migrator")

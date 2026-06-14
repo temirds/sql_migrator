@@ -4,8 +4,16 @@ from pathlib import Path
 
 
 DEFAULT_STATUS = "Ready"
-DEFAULT_PROJECT_DIR = "../dbt_fs"
 PERSISTENT_STATE_PATH = Path(__file__).resolve().parent / ".sql_migrator_state.json"
+
+
+def get_default_project_dir() -> Path:
+    sql_migrator_dir = Path(__file__).resolve().parent
+    repo_root = sql_migrator_dir.parent
+    return repo_root / "dbt_fs"
+
+
+DEFAULT_PROJECT_DIR = str(get_default_project_dir())
 
 
 def load_persistent_state() -> tuple[dict, str | None]:
