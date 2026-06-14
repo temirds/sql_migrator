@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass
-import os
-import platform
 from pathlib import Path
-import sys
-import traceback
 
 from nicegui import ui
 
+from command_utils import format_command_log, format_command_start_log, run_shell_command_async
 from converter import convert_oracle_to_starrocks, format_sql
 from dbt_resolver import load_config, resolve_tables
 from file_utils import build_file_fields, resolve_path, save_model_files
@@ -20,16 +15,6 @@ from state import (
     load_persistent_state,
     save_persistent_state,
 )
-
-
-@dataclass
-class CommandResult:
-    command_text: str
-    cwd: str
-    return_code: int | None
-    stdout: str
-    stderr: str
-    error: str | None = None
 
 
 state = AppState()
@@ -67,72 +52,6 @@ def refresh_logs() -> None:
     logs_text = "\n".join(state.logs) or "No logs"
     set_value(warnings_area, warnings_text)
     set_value(logs_area, logs_text)
-
-
-async def run_shell_command_async(command_text: str, cwd: Path) -> CommandResult:
-    try:
-        process = await asyncio.create_subprocess_shell(
-            command_text,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy(),
-        )
-        stdout_bytes, stderr_bytes = await process.communicate()
-        return CommandResult(
-            command_text=command_text,
-            cwd=str(cwd),
-            return_code=process.returncode,
-            stdout=stdout_bytes.decode("utf-8", errors="replace"),
-            stderr=stderr_bytes.decode("utf-8", errors="replace"),
-        )
-    except Exception as exc:
-        error_text = (
-            f"{type(exc).__name__}: {exc}\n"
-            + f"repr: {exc!r}\n"
-            + f"traceback:\n{traceback.format_exc()}"
-        )
-        return CommandResult(
-            command_text=command_text,
-            cwd=str(cwd),
-            return_code=None,
-            stdout="",
-            stderr="",
-            error=error_text,
-        )
-
-
-def format_command_log(result: CommandResult) -> str:
-    return "\n".join(
-        [
-            f"project_dir: {result.cwd}",
-            f"cwd: {result.cwd}",
-            f"command text: {result.command_text}",
-            f"python executable: {sys.executable}",
-            f"platform: {platform.platform()}",
-            f"PATH: {os.environ.get('PATH', '')}",
-            f"return code: {result.return_code}",
-            "stdout:",
-            result.stdout.strip(),
-            "stderr:",
-            result.stderr.strip(),
-            "error:",
-            (result.error or "").strip(),
-        ]
-    )
-
-
-def format_command_start_log(command_text: str, cwd: Path) -> str:
-    return "\n".join(
-        [
-            f"project_dir: {cwd}",
-            f"cwd: {cwd}",
-            f"command text: {command_text}",
-            f"python executable: {sys.executable}",
-            f"PATH: {os.environ.get('PATH', '')}",
-            "started",
-        ]
-    )
 
 
 def dbt_command_text(args: list[str]) -> str:

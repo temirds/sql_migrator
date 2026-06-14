@@ -1,3 +1,4 @@
 nicegui
 sqlglot
 pyyaml
+pytest

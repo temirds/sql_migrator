@@ -327,9 +327,10 @@ Before awaiting the dbt process, append a start log with cwd, command text, Pyth
 After completion, append the full command result with return code, stdout, stderr, and error.
 Logs must also include `project_dir: <computed path>`.
 
-dbt commands in NiceGUI button handlers must run through async subprocess APIs.
-Do not call blocking `subprocess.run` from UI event handlers, because it blocks the NiceGUI event loop and causes `Connection lost. Trying to reconnect...`.
-On Windows, run dbt exactly like a user does in a terminal: use `asyncio.create_subprocess_shell` with a command string, not list args via `create_subprocess_exec`.
+dbt commands in NiceGUI button handlers must not block the event loop.
+Do not call blocking `subprocess.run` directly from UI event handlers, because it blocks the NiceGUI event loop and causes `Connection lost. Trying to reconnect...`.
+On Windows, do not use `asyncio.create_subprocess_shell` or `asyncio.create_subprocess_exec`; the active event loop may raise `NotImplementedError`.
+Run dbt like a user does in a terminal by calling `subprocess.run(..., shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace")` inside a sync helper, then invoke it from async UI handlers with `asyncio.to_thread`.
 The dbt command cwd must be the resolved dbt project directory, e.g. `<airflow-repo>/dbt_fs`, not `sql_migrator`.
 Use command text:
 
@@ -339,6 +340,13 @@ dbt run --select <model_name> --empty
 ```
 
 If command startup fails, logs must include `type(exc).__name__`, `str(exc)`, `repr(exc)`, and `traceback.format_exc()`.
+
+## Tests
+
+Use pytest tests under `sql_migrator/tests`.
+Tests must not require a real dbt installation or real `dbt parse`.
+Use a handmade `target/manifest.json` fixture for resolver tests.
+Command runner tests should verify `python --version`, a missing command, and that async execution goes through `asyncio.to_thread`.
 
 If dbt executable is not found:
 show clear message:
