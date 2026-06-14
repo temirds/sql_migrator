@@ -19,6 +19,19 @@ def test_dwh_stage2_prefers_staging_model(tmp_path: Path) -> None:
     assert result.warnings == []
 
 
+def test_dwh_stage2_multipart_source_name_resolves_to_staging_model(tmp_path: Path) -> None:
+    write_manifest(tmp_path)
+
+    result = resolve_tables(
+        "select * from DWH_STAGE2.S01.Z_CLIENT",
+        str(tmp_path),
+        {},
+    )
+
+    assert "{{ xref('STG__S01_Z_CLIENT', 'DWH_STAGE') }}" in result.sql
+    assert result.warnings == []
+
+
 def test_physical_model_resolves_to_prod_xref(tmp_path: Path) -> None:
     write_manifest(tmp_path)
 

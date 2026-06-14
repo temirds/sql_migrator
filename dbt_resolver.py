@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
 
 TABLE_RE = re.compile(
-    r"\b(from|join)\s+(`?[\w$#]+`?(?:\.`?[\w$#]+`?)?)",
+    r"\b(from|join)\s+(`?[\w$#]+`?(?:\.`?[\w$#]+`?)*)",
     re.IGNORECASE,
 )
 
@@ -53,6 +53,8 @@ def normalize_relation_part(value: str) -> str:
 def parse_relation(raw_table: str) -> tuple[str | None, str]:
     clean = raw_table.strip().replace("`", "").replace('"', "")
     parts = [part for part in clean.split(".") if part]
+    if len(parts) >= 3 and normalize_relation_part(parts[0]) == "DWH_STAGE2":
+        return parts[0], "_".join(parts[1:])
     if len(parts) >= 2:
         return parts[-2], parts[-1]
     return None, parts[-1] if parts else clean

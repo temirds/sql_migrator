@@ -127,6 +127,7 @@ Important UI fixes already requested:
 * Base path label should be separate from input;
 * Output structure should look like an IDE file tree;
 * Warnings/Logs text must have left/top padding;
+* Warnings and Logs show latest entries first; prepend new messages instead of appending to the bottom.
 * file tree inputs must have right padding and not touch the panel edge.
 * Output structure inputs must have left/right internal padding so text does not touch field edges.
 
@@ -424,6 +425,7 @@ If Oracle schema is `DWH_STAGE2`:
 
 1. Normalize table name:
    `S01#Z_CLIENT` -> `S01_Z_CLIENT`
+   `S01.Z_CLIENT` -> `S01_Z_CLIENT`
 2. Build preferred model:
    `STG__S01_Z_CLIENT`
 3. Search manifest for this model first.

@@ -26,8 +26,8 @@ state.last_base_path = str(persistent_state.get("last_base_path") or default_bas
 state.base_path = state.last_base_path
 state.folder_name = ""
 if persistent_warning:
-    state.warnings.append(persistent_warning)
-    state.logs.append(persistent_warning)
+    state.warnings = [persistent_warning, *state.warnings]
+    state.logs = [persistent_warning, *state.logs]
 
 
 def set_value(element, value: str) -> None:
@@ -52,6 +52,22 @@ def refresh_logs() -> None:
     logs_text = "\n".join(state.logs) or "No logs"
     set_value(warnings_area, warnings_text)
     set_value(logs_area, logs_text)
+
+
+def prepend_logs(messages: list[str]) -> None:
+    state.logs = [*reversed(messages), *state.logs]
+
+
+def prepend_warnings(messages: list[str]) -> None:
+    state.warnings = [*reversed(messages), *state.warnings]
+
+
+def prepend_log(message: str) -> None:
+    prepend_logs([message])
+
+
+def prepend_warning(message: str) -> None:
+    prepend_warnings([message])
 
 
 def dbt_command_text(args: list[str]) -> str:
@@ -127,8 +143,10 @@ def convert_sql() -> None:
     resolved = resolve_tables(result.sql, state.project_dir, config)
 
     state.starrocks_sql = resolved.sql
-    state.warnings = [*result.warnings, *resolved.warnings]
-    state.logs = [*result.logs, *resolved.logs]
+    state.warnings = []
+    state.logs = []
+    prepend_warnings([*result.warnings, *resolved.warnings])
+    prepend_logs([*result.logs, *resolved.logs])
     state.target_schema = result.target_schema
     state.model_name = result.model_name
     state.base_object = result.base_object
@@ -146,7 +164,7 @@ def convert_sql() -> None:
         else:
             set_status("Converted")
     else:
-        state.warnings.append("Target table not found")
+        prepend_warning("Target table not found")
         set_status("Conversion completed with warnings", "warning")
 
     set_value(starrocks_editor, state.starrocks_sql)
@@ -206,13 +224,13 @@ def save_files() -> bool:
             model_name=state.model_name,
             target_schema=state.target_schema,
         )
-        state.logs.extend(logs)
-        state.warnings.extend(warnings)
+        prepend_logs(logs)
+        prepend_warnings(warnings)
         refresh_logs()
         set_status("Saved")
         return True
     except Exception as exc:
-        state.warnings.append(f"Save error: {exc}")
+        prepend_warning(f"Save error: {exc}")
         refresh_logs()
         set_status("Save failed")
         return False
@@ -222,10 +240,10 @@ async def dbt_parse() -> None:
     set_status("Running dbt parse...")
     command_text = dbt_command_text(["parse"])
     cwd = dbt_project_dir()
-    state.logs.append(format_command_start_log(command_text, cwd))
+    prepend_log(format_command_start_log(command_text, cwd))
     refresh_logs()
     code, output = await run_dbt_async(command_text, cwd)
-    state.logs.append(output)
+    prepend_log(output)
     refresh_logs()
     if code == 0:
         set_status("dbt parse finished")
@@ -241,10 +259,10 @@ async def save_and_dbt_run() -> None:
     args = ["run", "--select", state.model_name, "--empty"]
     command_text = dbt_command_text(args)
     cwd = dbt_project_dir()
-    state.logs.append(format_command_start_log(command_text, cwd))
+    prepend_log(format_command_start_log(command_text, cwd))
     refresh_logs()
     code, output = await run_dbt_async(command_text, cwd)
-    state.logs.append(output)
+    prepend_log(output)
     refresh_logs()
     if code == 0:
         set_status("dbt run finished")
