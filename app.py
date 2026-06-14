@@ -1,20 +1,41 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
+import os
 from pathlib import Path
+import shlex
 
 from nicegui import ui
 
 from converter import convert_oracle_to_starrocks, format_sql
 from dbt_resolver import load_config, resolve_tables
-from file_utils import build_file_fields, run_dbt, save_model_files
-from state import AppState, DEFAULT_STATUS
+from file_utils import build_file_fields, resolve_path, save_model_files
+from state import AppState, DEFAULT_STATUS, load_persistent_state, save_persistent_state
+
+
+@dataclass
+class CommandResult:
+    command_args: list[str]
+    command_text: str
+    cwd: str
+    return_code: int | None
+    stdout: str
+    stderr: str
+    error: str | None = None
 
 
 state = AppState()
 config = load_config()
 state.project_dir = config.get("project_dir", state.project_dir)
-state.base_path = str(Path(state.project_dir) / "models")
+default_base_path = str(Path(state.project_dir) / "models")
+persistent_state, persistent_warning = load_persistent_state()
+state.last_base_path = str(persistent_state.get("last_base_path") or default_base_path)
+state.base_path = state.last_base_path
 state.folder_name = ""
+if persistent_warning:
+    state.warnings.append(persistent_warning)
+    state.logs.append(persistent_warning)
 
 
 def set_value(element, value: str) -> None:
@@ -39,6 +60,74 @@ def refresh_logs() -> None:
     logs_text = "\n".join(state.logs) or "No logs"
     set_value(warnings_area, warnings_text)
     set_value(logs_area, logs_text)
+
+
+async def run_command_async(command: list[str], cwd: Path) -> CommandResult:
+    command_text = " ".join(shlex.quote(arg) for arg in command)
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=os.environ.copy(),
+        )
+        stdout_bytes, stderr_bytes = await process.communicate()
+        return CommandResult(
+            command_args=command,
+            command_text=command_text,
+            cwd=str(cwd),
+            return_code=process.returncode,
+            stdout=stdout_bytes.decode("utf-8", errors="replace"),
+            stderr=stderr_bytes.decode("utf-8", errors="replace"),
+        )
+    except FileNotFoundError as exc:
+        return CommandResult(
+            command_args=command,
+            command_text=command_text,
+            cwd=str(cwd),
+            return_code=None,
+            stdout="",
+            stderr="",
+            error=(
+                "dbt executable not found. Check that dbt is installed and available in PATH.\n"
+                f"PATH={os.environ.get('PATH', '')}\n"
+                f"{exc}"
+            ),
+        )
+    except Exception as exc:
+        return CommandResult(
+            command_args=command,
+            command_text=command_text,
+            cwd=str(cwd),
+            return_code=None,
+            stdout="",
+            stderr="",
+            error=f"dbt command error: {exc}",
+        )
+
+
+def format_command_log(result: CommandResult) -> str:
+    return "\n".join(
+        [
+            f"cwd: {result.cwd}",
+            f"command args: {result.command_args!r}",
+            f"command text: {result.command_text}",
+            f"return code: {result.return_code}",
+            "stdout:",
+            result.stdout.strip(),
+            "stderr:",
+            result.stderr.strip(),
+            "error:",
+            (result.error or "").strip(),
+        ]
+    )
+
+
+async def run_dbt_async(args: list[str]) -> tuple[int | None, str]:
+    result = await run_command_async(["dbt", *args], resolve_path(state.project_dir))
+    return result.return_code, format_command_log(result)
 
 
 def full_save_dir() -> str:
@@ -75,6 +164,8 @@ def update_starrocks_sql(event) -> None:
 
 def update_base_path(event) -> None:
     state.base_path = event.value or ""
+    state.last_base_path = state.base_path
+    save_persistent_state({"last_base_path": state.last_base_path})
     refresh_output_paths()
 
 
@@ -109,7 +200,6 @@ def convert_sql() -> None:
         fields = build_file_fields(state.project_dir, result.target_table)
         state.model_name = fields["model_name"]
         state.base_object = fields["base_object"]
-        state.base_path = str(Path(state.project_dir) / "models")
         state.folder_name = state.base_object
         state.sql_file_name = fields["sql_file_name"]
         state.yaml_file_name = fields["yaml_file_name"]
@@ -159,6 +249,7 @@ def format_oracle_sql() -> None:
 
 
 def format_starrocks_sql() -> None:
+    state.starrocks_sql = getattr(starrocks_editor, "value", state.starrocks_sql) or ""
     formatted_sql, error = format_sql(state.starrocks_sql, "starrocks")
     if error:
         set_status(error)
@@ -190,21 +281,21 @@ def save_files() -> bool:
         return False
 
 
-def dbt_parse() -> None:
+async def dbt_parse() -> None:
     set_status("Running dbt parse...")
-    code, output = run_dbt(state.project_dir, ["parse"])
+    code, output = await run_dbt_async(["parse"])
     state.logs.append(output)
     refresh_logs()
     set_status("dbt parse finished" if code == 0 else "dbt parse failed")
 
 
-def save_and_dbt_run() -> None:
+async def save_and_dbt_run() -> None:
     if not save_files():
         return
     set_status("Running dbt run...")
     state.use_empty_dbt_run = True
     args = ["run", "--select", state.model_name, "--empty"]
-    code, output = run_dbt(state.project_dir, args)
+    code, output = await run_dbt_async(args)
     state.logs.append(output)
     refresh_logs()
     set_status("dbt run finished" if code == 0 else "dbt run failed")

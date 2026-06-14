@@ -44,6 +44,7 @@ airflow-repo/
     file_utils.py
     state.py
     config.yml
+    .sql_migrator_state.json
     requirements.txt
     README.md
     context.md
@@ -80,6 +81,7 @@ Do not change this structure unless explicitly requested.
 * Right editor is editable.
 * No auto-conversion while typing.
 * Conversion only runs by button click.
+* Format in the right StarRocks / dbt editor must support dbt/Jinja expressions such as `{{ xref(...) }}` without removing or corrupting them.
 
 Each editor has overlay buttons inside the editor:
 
@@ -160,12 +162,26 @@ Internal state should still keep:
 
 * project_dir
 * base_path
+* last_base_path
 * folder_name
 * sql_file_name
 * yaml_file_name
 * model_name
 * base_object
 * target_schema
+
+Base path persistence:
+
+* store the last manually entered Base path in `state.last_base_path`;
+* persist it in `sql_migrator/.sql_migrator_state.json` as:
+  `{"last_base_path": "../dbt_fs/models/other"}`;
+* on app start, use persisted `last_base_path` if present, otherwise default to `../dbt_fs/models`;
+* if the persistence file is missing, use default;
+* if the persistence file is broken, ignore it, use default, and add warning/log;
+* when user edits Base path, update `state.base_path`, update `state.last_base_path`, and save the JSON file immediately;
+* Convert must not reset Base path to `../dbt_fs/models`;
+* Clear, dbt parse, Save, and Save + dbt run must not change Base path;
+* Save paths use `base_path / folder_name`, so `../dbt_fs/models/other` plus `ds_bin_restrictions` saves under `../dbt_fs/models/other/ds_bin_restrictions`.
 
 ## Naming rules
 
@@ -293,6 +309,9 @@ For all dbt commands, logs must include:
 * stdout;
 * stderr;
 * error if any.
+
+dbt commands in NiceGUI button handlers must run through async subprocess APIs.
+Do not call blocking `subprocess.run` from UI event handlers, because it blocks the NiceGUI event loop and causes `Connection lost. Trying to reconnect...`.
 
 If dbt executable is not found:
 show clear message:

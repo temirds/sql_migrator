@@ -14,6 +14,7 @@ INSERT_RE = re.compile(
     r"\s*(?:\([^)]*\)\s*)?(?P<select>select\b.*)$",
     re.IGNORECASE | re.DOTALL,
 )
+JINJA_RE = re.compile(r"\{\{.*?\}\}", re.DOTALL)
 TECH_SUFFIX_RE = re.compile(r"(_(?:P\d*(?:_\d+)?|B\d*|G\d*|S|T|TMP))$", re.IGNORECASE)
 
 
@@ -332,12 +333,26 @@ def format_sql(sql: str, dialect: str) -> tuple[str, str | None]:
         return "", None
 
     try:
-        expressions = sqlglot.parse(sql, read=dialect)
+        protected_sql = sql
+        placeholders: dict[str, str] = {}
+        for index, match in enumerate(JINJA_RE.finditer(sql)):
+            placeholder = f"JINJA_PLACEHOLDER_{index}"
+            placeholders[placeholder] = match.group(0)
+            protected_sql = protected_sql.replace(match.group(0), placeholder, 1)
+
+        expressions = sqlglot.parse(protected_sql, read=dialect)
         formatted_sql = ";\n\n".join(
             expression.sql(dialect=dialect, pretty=True)
             for expression in expressions
             if expression is not None
         )
+        for placeholder, jinja in placeholders.items():
+            formatted_sql = re.sub(
+                rf"[`\"]?{re.escape(placeholder)}[`\"]?",
+                jinja,
+                formatted_sql,
+                flags=re.IGNORECASE,
+            )
         return formatted_sql, None
     except Exception as exc:
         return sql, f"Format error: {exc}"
