@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from conftest import write_manifest
-from converter import convert_oracle_to_starrocks
+from converter import convert_oracle_to_starrocks, detect_oracle_only_constructs
 from dbt_resolver import resolve_tables
 
 
@@ -143,3 +143,69 @@ commit;
     assert "append" not in result.sql.lower()
     assert "commit" not in result.sql.lower()
     assert not result.sql.rstrip().endswith(";")
+
+
+def test_oracle_keep_dense_rank_is_detected() -> None:
+    sql = """
+insert into DS$BIN_RESTRICTIONS$P
+select replace(max(brand) keep(dense_rank last order by tt.updated), ' ') as brand
+from DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY tt;
+commit;
+"""
+
+    result = convert_oracle_to_starrocks(sql)
+    warning_text = "\n".join(result.warnings)
+
+    assert "Oracle KEEP" in warning_text
+    assert "manual rewrite" in warning_text or "not supported" in warning_text
+    assert result.warnings
+
+
+def test_oracle_keep_dense_rank_with_case_order_by_is_detected() -> None:
+    sql = """
+insert into DS$BIN_RESTRICTIONS$P
+select
+  replace(
+    max(brand) keep (
+      dense_rank
+      last
+      order by case when tt.updated is null then 1 else 0 end, tt.updated
+    ),
+    ' '
+  ) as brand
+from DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY tt;
+"""
+
+    result = convert_oracle_to_starrocks(sql)
+    warning_text = "\n".join(result.warnings)
+
+    assert "Oracle KEEP" in warning_text
+    assert "manual rewrite" in warning_text or "not supported" in warning_text
+    assert result.warnings
+
+
+def test_detector_catches_oracle_leftovers() -> None:
+    warnings = detect_oracle_only_constructs(
+        "select max(brand) keep (dense_rank last order by updated) as brand from t"
+    )
+    warning_text = "\n".join(warnings)
+
+    assert "Oracle KEEP" in warning_text
+
+
+def test_normal_sql_has_no_unsupported_oracle_warnings(tmp_path: Path) -> None:
+    raw_sql = """
+insert into DS$BIN_RESTRICTIONS$P
+select coalesce(name, 'N/A') as name
+from DWH_STAGE2.S01#Z_CLIENT;
+"""
+    write_manifest(tmp_path)
+
+    converted = convert_oracle_to_starrocks(raw_sql)
+    warning_text = "\n".join(converted.warnings)
+    resolved = resolve_tables(converted.sql, str(tmp_path), {}, raw_sql=raw_sql)
+
+    assert "Oracle-only construct" not in warning_text
+    assert "Oracle KEEP" not in warning_text
+    assert "not supported" not in warning_text
+    assert "{{ xref('STG__S01_Z_CLIENT', 'DWH_STAGE') }}" in resolved.sql

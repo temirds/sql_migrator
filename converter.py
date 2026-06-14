@@ -17,6 +17,38 @@ INSERT_RE = re.compile(
 JINJA_RE = re.compile(r"\{\{.*?\}\}", re.DOTALL)
 TECH_SUFFIX_RE = re.compile(r"(_(?:P\d*(?:_\d+)?|B\d*|G\d*|S|T|TMP))$", re.IGNORECASE)
 
+ORACLE_UNSUPPORTED_PATTERNS = [
+    {
+        "name": "oracle_keep_dense_rank",
+        "regex": r"\bkeep\s*\(\s*dense_rank\s+(first|last)\s+order\s+by\b",
+        "message": (
+            "Oracle KEEP (DENSE_RANK FIRST/LAST ORDER BY ...) is not supported "
+            "by StarRocks and requires manual rewrite."
+        ),
+        "severity": "error",
+        "suggestion": "Rewrite with explicit windowing or a verified StarRocks aggregate strategy.",
+    },
+]
+
+ORACLE_ONLY_DETECT_PATTERNS = [
+    ("KEEP", r"\bkeep\s*\("),
+    ("DENSE_RANK", r"\bdense_rank\b"),
+    ("CONNECT BY", r"\bconnect\s+by\b"),
+    ("START WITH", r"\bstart\s+with\b"),
+    ("ROWNUM", r"\brownum\b"),
+    ("NVL", r"\bnvl\s*\("),
+    ("SYSDATE", r"\bsysdate\b"),
+    ("SYSTIMESTAMP", r"\bsystimestamp\b"),
+    ("DECODE", r"\bdecode\s*\("),
+    ("MINUS", r"\bminus\b"),
+    ("DUAL", r"\bdual\b"),
+    ("TO_DATE", r"\bto_date\s*\("),
+    ("TO_CHAR", r"\bto_char\s*\("),
+    ("TO_NUMBER", r"\bto_number\s*\("),
+    ("ADD_MONTHS", r"\badd_months\s*\("),
+    ("TRUNC", r"\btrunc\s*\("),
+]
+
 
 @dataclass
 class ConversionResult:
@@ -313,6 +345,44 @@ def clean_converted_sql(sql: str) -> str:
     return strip_sql_noise(sql)
 
 
+def detect_oracle_only_constructs(sql: str) -> list[str]:
+    warnings: list[str] = []
+    seen: set[str] = set()
+    has_keep = re.search(r"\bkeep\s*\(", sql, flags=re.IGNORECASE | re.DOTALL)
+    has_dense_rank = re.search(r"\bdense_rank\b", sql, flags=re.IGNORECASE | re.DOTALL)
+
+    for pattern in ORACLE_UNSUPPORTED_PATTERNS:
+        if re.search(pattern["regex"], sql, flags=re.IGNORECASE | re.DOTALL):
+            name = pattern["name"]
+            seen.add(name)
+            suggestion = pattern.get("suggestion", "")
+            message = f"{pattern['severity'].upper()}: {pattern['message']}"
+            if suggestion:
+                message = f"{message} Suggestion: {suggestion}"
+            warnings.append(message)
+
+    if has_keep and has_dense_rank and "oracle_keep_dense_rank" not in seen:
+        seen.add("oracle_keep_dense_rank")
+        warnings.append(
+            "ERROR: Oracle KEEP (DENSE_RANK FIRST/LAST ORDER BY ...) is not supported "
+            "by StarRocks and requires manual rewrite."
+        )
+
+    for construct, regex in ORACLE_ONLY_DETECT_PATTERNS:
+        if re.search(regex, sql, flags=re.IGNORECASE | re.DOTALL):
+            if construct in {"KEEP", "DENSE_RANK"} and "oracle_keep_dense_rank" in seen:
+                continue
+            warnings.append(f"Oracle-only construct remains after conversion: {construct}")
+
+    return warnings
+
+
+def add_oracle_only_warnings(result: ConversionResult) -> None:
+    for warning in detect_oracle_only_constructs(result.sql):
+        if warning not in result.warnings:
+            result.warnings.append(warning)
+
+
 def convert_oracle_to_starrocks(sql: str) -> ConversionResult:
     result = ConversionResult()
     if not sql.strip():
@@ -342,10 +412,12 @@ def convert_oracle_to_starrocks(sql: str) -> ConversionResult:
         result.sql = clean_converted_sql(
             post_clean_sql(lower_sql_outside_strings(";\n\n".join(converted)))
         )
+        add_oracle_only_warnings(result)
         return result
     except Exception as exc:
         result.sql = clean_converted_sql(f"{cleaned_sql}\n\n/* Conversion error: {exc} */")
         result.warnings.append(f"Conversion error: {exc}")
+        add_oracle_only_warnings(result)
         return result
 
 

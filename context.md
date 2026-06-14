@@ -1,238 +1,172 @@
-# sql_migrator context
-
-## Goal
-
-Local Python UI tool for migrating Oracle SQL to StarRocks/dbt SQL.
-
-The tool is used inside `airflow-repo` next to the dbt project `dbt_fs`.
-
-Main flow:
-1. User pastes Oracle SQL into the left editor.
-2. User clicks Convert.
-3. Converted StarRocks/dbt SQL appears in the right editor.
-4. Tool extracts target table from `insert into`.
-5. Tool prepares output folder, SQL file name, YAML file name.
-6. User can save SQL + YAML.
-7. User can run dbt parse.
-8. User can run dbt run --empty for the generated model.
-
-## Tech stack
-
-- Python
-- NiceGUI
-- CodeMirror via `ui.codemirror`
-- sqlglot
-- pyyaml
-- dbt project: sibling `dbt_fs` next to `sql_migrator`
-
-Do not use Streamlit.
+# SQL Migrator context
 
 ## Project structure
+
+Проект расположен внутри `airflow-repo`.
+
+Ожидаемая структура:
 
 ```text
 airflow-repo/
   dbt_fs/
     dbt_project.yml
-    target/
-      manifest.json
+    target/manifest.json
     models/
-      ...
   sql_migrator/
     app.py
-    command_runner.py
     converter.py
     dbt_resolver.py
     file_utils.py
-    self_check.py
     state.py
+    command_runner.py
     config.yml
-    .sql_migrator_state.json
     requirements.txt
-    README.md
+    self_check.py
+    tests/
     context.md
 ```
 
-## UI decisions
+`sql_migrator` и `dbt_fs` находятся на одном уровне.
 
-The UI uses a JetBrains Darcula-like dark theme.
+Нельзя хардкодить абсолютный путь пользователя.
 
-Current layout must stay:
+Правильный default `project_dir`:
 
-1. Two SQL editors on top:
+```python
+Path(__file__).resolve().parent.parent / "dbt_fs"
+```
+
+Default `base_path`:
+
+```python
+project_dir / "models"
+```
+
+Если пользователь вручную менял `base_path`, использовать сохранённый `last_base_path`.
+
+---
+
+## UI context
+
+UI написан на NiceGUI.
+
+Основной layout:
+
+1. Верхняя зона: два SQL editor side-by-side.
 
    * left: Oracle SQL
    * right: StarRocks / dbt SQL
-2. Action bar below editors:
+2. Action bar:
 
    * Convert
    * Clear
    * dbt parse
    * Save
    * Save + dbt run
-   * compact status chip
-3. Output structure block below actions.
-4. Warnings and Logs panels below output structure.
+   * status chip
+3. Output structure
+4. Warnings
+5. Logs
 
-Do not change this structure unless explicitly requested.
+`Use --empty` checkbox удалён.
+`dbt run` всегда запускается с `--empty`.
 
-## SQL editors
+Кнопка `Save + dbt run` всегда должна выполнять:
 
-* Use `ui.codemirror`.
-* Editors must stay side by side.
-* Both editors have the same height.
-* Right editor is editable.
-* No auto-conversion while typing.
-* Conversion only runs by button click.
-* Format in the right StarRocks / dbt editor must support dbt/Jinja expressions such as `{{ xref(...) }}` without removing or corrupting them.
-
-Each editor has overlay buttons inside the editor:
-
-* copy
-* format
-
-Overlay buttons:
-
-* appear on hover;
-* are inside the editor area;
-* are positioned in the top-right area;
-* must not overlap scrollbar;
-* should be shifted slightly left from the scrollbar.
-
-## UI style
-
-Theme should look like JetBrains IDE / Darcula.
-
-Preferred colors:
-
-```css
---jb-bg: #2b2d30;
---jb-panel: #1e1f22;
---jb-panel-2: #25262a;
---jb-header: #3c3f41;
---jb-border: #4b4f52;
---jb-border-soft: #3a3d40;
---jb-text: #dfe1e5;
---jb-muted: #a9b0b8;
---jb-muted-2: #7a8088;
---jb-accent: #4e94ce;
---jb-accent-hover: #5aa7e8;
---jb-input: #2f3136;
---jb-editor: #1e1f22;
+```bash
+dbt run --select <MODEL_NAME> --empty
 ```
 
-Important UI fixes already requested:
+UI стиль:
 
-* remove large top status text like `Formatted StarRocks SQL`;
-* keep status as small chip in action bar;
-* buttons should be compact, not huge blue buttons;
-* input labels must not overlap input values;
-* Base path label should be separate from input;
-* Output structure should look like an IDE file tree;
-* Warnings/Logs text must have left/top padding;
-* Warnings and Logs show latest entries first; prepend new messages instead of appending to the bottom.
-* file tree inputs must have right padding and not touch the panel edge.
-* Output structure inputs must have left/right internal padding so text does not touch field edges.
+* тёмный JetBrains/Darcula-like;
+* без больших синих uppercase кнопок;
+* status должен быть compact chip;
+* Warnings/Logs должны иметь ограничение по высоте примерно 50 строк и внутренний scroll;
+* новые logs/warnings должны появляться сверху, latest first;
+* editor overlay buttons copy/format должны быть внутри editor top-right, но не перекрывать scrollbar.
 
-## Output structure
+---
 
-Output structure should look like an editable file tree.
+## Base path persistence
 
-Concept:
+Проблема была: после Convert base path сбрасывался на `dbt_fs/models`.
+
+Правильное поведение:
+
+* Convert НЕ меняет base_path.
+* Clear НЕ меняет base_path.
+* Save НЕ меняет base_path.
+* dbt parse/run НЕ меняют base_path.
+* Только ручное изменение Base path обновляет `last_base_path`.
+
+Persistent state file:
 
 ```text
-Output structure
-
-Base path
-[ ..\dbt_fs\models ]
-
- dm_partners_sales
-   <> DM_PARTNERS_SALES_P1.sql
-   {} _DM_PARTNERS_SALES_MODELS.yml
-
-Will save
-SQL:  ..\dbt_fs\models\dm_partners_sales\DM_PARTNERS_SALES_P1.sql
-YAML: ..\dbt_fs\models\dm_partners_sales\_DM_PARTNERS_SALES_MODELS.yml
+sql_migrator/.sql_migrator_state.json
 ```
 
-Editable fields:
+Формат:
 
-* Base path
-* folder name
-* SQL file name
-* YAML file name
+```json
+{
+  "last_base_path": "../dbt_fs/models/other"
+}
+```
 
-Internal state should still keep:
+Если файл отсутствует, использовать default.
 
-* project_dir
-* base_path
-* last_base_path
-* folder_name
-* sql_file_name
-* yaml_file_name
-* model_name
-* base_object
-* target_schema
+Если файл битый, игнорировать и логировать warning.
 
-Default dbt project path:
-
-* do not hardcode a user-specific absolute path;
-* do not use the process current working directory as the primary source;
-* compute the default project directory from the `sql_migrator` folder:
-  `sql_migrator_dir = Path(__file__).resolve().parent`;
-  `repo_root = sql_migrator_dir.parent`;
-  `default_project_dir = repo_root / "dbt_fs"`;
-* `sql_migrator` and `dbt_fs` are sibling folders under `airflow-repo`;
-* config may override `project_dir`, but missing config uses the sibling `dbt_fs`;
-* default Base path is `default_project_dir / "models"`, unless a persisted `last_base_path` exists.
-
-Base path persistence:
-
-* store the last manually entered Base path in `state.last_base_path`;
-* persist it in `sql_migrator/.sql_migrator_state.json` as:
-  `{"last_base_path": "../dbt_fs/models/other"}`;
-* on app start, use persisted `last_base_path` if present, otherwise default to `../dbt_fs/models`;
-* if the persistence file is missing, use default;
-* if the persistence file is broken, ignore it, use default, and add warning/log;
-* when user edits Base path, update `state.base_path`, update `state.last_base_path`, and save the JSON file immediately;
-* Convert must not reset Base path to `../dbt_fs/models`;
-* Clear, dbt parse, Save, and Save + dbt run must not change Base path;
-* Save paths use `base_path / folder_name`, so `../dbt_fs/models/other` plus `ds_bin_restrictions` saves under `../dbt_fs/models/other/ds_bin_restrictions`.
+---
 
 ## Naming rules
 
-If target table is:
+Если target table содержит schema, schema хранится отдельно и НЕ входит в model/folder/yml names.
 
-```sql
-insert into other.dm$partners_sales$p1
+Пример:
+
+```text
+other.dm$partners_sales$p1
 ```
 
-Then schema `other` must NOT be included in model/folder/yml names.
-
-Correct:
+Ожидаемо:
 
 ```text
 target_schema: other
 model_name: DM_PARTNERS_SALES_P1
-sql_file_name: DM_PARTNERS_SALES_P1.sql
 base_object: dm_partners_sales
 folder_name: dm_partners_sales
+sql_file_name: DM_PARTNERS_SALES_P1.sql
 yaml_file_name: _DM_PARTNERS_SALES_MODELS.yml
 ```
 
-Schema is stored separately as `target_schema`.
+Пример:
 
-Rules:
+```text
+ds$bin_restrictions$b
+```
 
-* schema.table -> split schema and table;
-* model name is built only from table;
-* replace special chars with `_`;
-* `$`, `#`, `.`, spaces -> `_`;
-* collapse multiple `_`;
-* strip leading/trailing `_`;
-* SQL file name upper case;
-* folder name lower case.
+Ожидаемо:
 
-Base object removes technical suffixes:
+```text
+target_schema: None
+model_name: DS_BIN_RESTRICTIONS_B
+base_object: ds_bin_restrictions
+folder_name: ds_bin_restrictions
+sql_file_name: DS_BIN_RESTRICTIONS_B.sql
+yaml_file_name: _DS_BIN_RESTRICTIONS_MODELS.yml
+```
+
+Normalize rules:
+
+* `$`, `#`, `.`, spaces, special chars -> `_`
+* collapse multiple `_`
+* trim `_`
+* model/sql file upper case
+* folder/base lower case
+
+Base object suffix removal:
 
 * `_P`
 * `_P1`
@@ -245,31 +179,17 @@ Base object removes technical suffixes:
 * `_T`
 * `_TMP`
 
-Examples:
+---
+
+## YAML rules
+
+YAML file:
 
 ```text
-other.dm$partners_sales$p1
--> model_name: DM_PARTNERS_SALES_P1
--> base_object: dm_partners_sales
-
-ds$bin_restrictions$b
--> model_name: DS_BIN_RESTRICTIONS_B
--> base_object: ds_bin_restrictions
-
-ss.f$intellect_consultant$s
--> model_name: F_INTELLECT_CONSULTANT_S
--> base_object: f_intellect_consultant
+_<BASE_OBJECT_UPPER>_MODELS.yml
 ```
 
-## YAML generation
-
-YAML file name:
-
-```text
-_<BASE_MODEL_NAME>_MODELS.yml
-```
-
-YAML model config format must be:
+Expected format:
 
 ```yaml
 version: 2
@@ -292,342 +212,674 @@ Rules:
 
 * `tags` must be inline:
   `tags: ["OTHER", "DM_PARTNERS_SALES"]`
-* Do not render tags as multiline list.
-* There must be one empty line between models.
-* `materialized` is always `truncate_insert`.
-* `description` is always `''`.
-* If YAML already exists:
+* `materialized: truncate_insert`
+* `description: ''`
+* one blank line between model entries
+* if YAML exists, preserve existing models/order
+* if model already exists, update it, do not duplicate
+* if adding new model, append to end
+* if existing YAML has tags, reuse first tag as schema tag
+* second tag is always base model name
+* if no existing tags, first tag is `target_schema.upper()` or `"OTHER"`
 
-  * read it;
-  * preserve existing models;
-  * add new model to the end;
-  * if model already exists, update config instead of adding duplicate;
-  * never allow two models with the same name.
-* If existing YAML has tags, reuse the first tag as schema tag.
-* If not, use `target_schema.upper()` or `"OTHER"`.
+---
 
-## dbt command behavior
+## Converter rules
 
-Buttons:
+Input can be Oracle SQL / PLSQL fragment.
 
-* `dbt parse`
-* `Save + dbt run`
+Converter must:
 
-There is no `Use --empty` checkbox in the UI.
-
-For all dbt commands, logs must include:
-
-* cwd;
-* command text;
-* Python executable;
-* platform;
-* PATH;
-* return code;
-* stdout;
-* stderr;
-* error if any.
-Before awaiting the dbt process, append a start log with cwd, command text, Python executable, and PATH so the UI shows what is running immediately.
-After completion, append the full command result with return code, stdout, stderr, and error.
-Logs must also include `project_dir: <computed path>`.
-
-dbt commands in NiceGUI button handlers must not block the event loop.
-Do not call blocking `subprocess.run` directly from UI event handlers, because it blocks the NiceGUI event loop and causes `Connection lost. Trying to reconnect...`.
-On Windows, do not use `asyncio.create_subprocess_shell` or `asyncio.create_subprocess_exec`; the active event loop may raise `NotImplementedError`.
-Run dbt like a user does in a terminal by calling `subprocess.run(..., shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace")` inside a sync helper, then invoke it from async UI handlers with `asyncio.to_thread`.
-The dbt command cwd must be the resolved dbt project directory, e.g. `<airflow-repo>/dbt_fs`, not `sql_migrator`.
-Use command text:
-
-```text
-dbt parse
-dbt run --select <model_name> --empty
-```
-
-If command startup fails, logs must include `type(exc).__name__`, `str(exc)`, `repr(exc)`, and `traceback.format_exc()`.
-
-## Tests
-
-Use pytest tests under `sql_migrator/tests`.
-Tests must not require a real dbt installation or real `dbt parse`.
-Use a handmade `target/manifest.json` fixture for resolver tests.
-Command runner tests should verify `python --version`, a missing command, and that async execution goes through `asyncio.to_thread`.
-
-If dbt executable is not found:
-show clear message:
-
-```text
-dbt executable not found. Check that dbt is installed and available in PATH.
-```
-
-Also log current PATH.
-
-`Save + dbt run`:
-
-* always runs:
-  `dbt run --select <model_name> --empty`
-* if state still has `use_empty`, it may remain internally, but UI behavior must always treat it as enabled.
-
-## Oracle to StarRocks conversion rules
-
-Base conversion uses sqlglot:
-
-* read dialect: oracle
-* write dialect: starrocks
-* pretty=True
-
-Pre/post rules:
-
-* remove Oracle hints `/*+ ... */`;
+* extract target table from `insert into <target>`;
+* remove `insert into ...`;
+* remove Oracle hints;
+* remove comments;
 * remove `commit`;
-* remove `insert into <target_table>` from result SQL;
-* `sysdate` -> `current_timestamp`;
-* `nvl(...)` -> `coalesce(...)`;
-* `standard_hash(x, 'MD5')` -> `upper(md5(coalesce(cast(x as string), '')))`;
-* nested `standard_hash` should be handled;
-* Oracle `||` -> `concat(...)`;
-* `trunc(date)` -> `cast(date as date)`;
-* `trunc(date, 'mm')` -> `date_trunc('month', date)`;
-* `add_months(date, -n)` -> `date - interval n month`;
-* `to_char(x)` -> `cast(x as string)`;
-* `to_number(x)` -> `cast(x as bigint)`;
-* `decode(...)` -> `case when ...`.
+* remove trailing semicolon;
+* convert Oracle SQL to StarRocks/dbt SQL as much as possible;
+* preserve warnings for unsupported parts;
+* never silently output known invalid StarRocks SQL as success.
 
-If sqlglot fails:
+Required replacements:
 
-* UI must not crash;
-* show readable error in result SQL or warnings;
-* keep best-effort converted SQL.
+* `sysdate` -> `current_timestamp`
+* `nvl(...)` -> `coalesce(...)`
+* `standard_hash(x, 'MD5')` -> `upper(md5(coalesce(cast(x as string), '')))`, including nested cases
+* Oracle `||` -> `concat(...)`
+* `trunc(date)` -> `cast(date as date)`
+* `trunc(date, 'mm')` -> `date_trunc('month', date)`
+* `add_months(date, -n)` -> `date - interval n month`
+* `to_char(x)` -> `cast(x as string)`
+* `to_number(x)` -> `cast(x as bigint)`
+* `decode(...)` -> `case when ...`
+* aliases/columns with `$` normalized to `_`, for example `s$md5` -> `s_md5`
 
-## dbt resolver / xref rules
+Cleanup must happen before returning `ConversionResult`.
 
-Need to replace physical tables with dbt `xref` using `target/manifest.json`.
+Preferred function names:
 
-Resolver must use raw Oracle table references before SQLGlot normalization.
-Pre-scan the original Oracle SQL for physical references before `$`, `#`, `.`, and case are rewritten.
-Partial model matches are forbidden: no `startswith`, `contains`, prefix, substring, or best-effort partial matching.
-Only case-insensitive exact match and exact normalized match are allowed for model/source name, alias, and identifier.
+* `clean_oracle_sql`
+* `clean_converted_sql`
+* `extract_target_table`
+* `convert_oracle_to_starrocks`
 
-Important context:
+Avoid unclear names like:
 
-Oracle physical table example:
+* `final_cleanup_sql`
+* `do_cleanup`
+* `fix_sql`
+
+---
+
+## Unsupported Oracle syntax policy
+
+`sqlglot` can leave Oracle-only syntax unchanged. This is dangerous.
+
+The converter must detect unsupported Oracle-specific constructs after conversion and add warnings/errors.
+
+Minimum detector list:
+
+* `KEEP (`
+* `DENSE_RANK`
+* `CONNECT BY`
+* `START WITH`
+* `ROWNUM`
+* `NVL(`
+* `SYSDATE`
+* `SYSTIMESTAMP`
+* `DECODE(`
+* `MINUS`
+* `DUAL`
+* `TO_DATE(`
+* `TO_CHAR(`
+* `TO_NUMBER(`
+* `ADD_MONTHS(`
+* `TRUNC(`
+
+Important example:
+
+Oracle:
 
 ```sql
+replace(max(brand) keep(dense_rank last order by tt.updated), ' ')
+```
+
+This is NOT valid StarRocks SQL if left as:
+
+```sql
+replace(
+  max(brand) keep (
+    dense_rank
+    last
+    order by tt.updated
+  ),
+  ' '
+)
+```
+
+Policy:
+
+* default strategy for Oracle `KEEP (DENSE_RANK FIRST/LAST ORDER BY ...)` is warning/manual rewrite;
+* do not silently claim success;
+* do not generate invalid StarRocks SQL without warning;
+* automatic rewrite is optional only if safely implemented and tested;
+* partial invalid conversion is worse than explicit warning.
+
+Suggested warning:
+
+```text
+Unsupported Oracle KEEP aggregate detected. Manual rewrite required.
+```
+
+---
+
+## dbt resolver rules
+
+Resolver must use raw Oracle table references before normalization.
+
+Critical rule:
+`DWH_STAGE2` is NOT a real StarRocks/source schema.
+
+For DWH_STAGE2:
+
+```text
+DWH_STAGE2.<SRC_SCHEMA>$<TABLE>
+-> <SRC_SCHEMA>.<TABLE>
+-> preferred model STG__<SRC_SCHEMA>_<TABLE>
+-> if STG exists, xref('STG__<SRC_SCHEMA>_<TABLE>', 'DWH_STAGE')
+-> else source('<SRC_SCHEMA>', '<TABLE>') if source exists
+-> else physical fallback <SRC_SCHEMA>.<TABLE> + warning
+```
+
+Same logic for `#`:
+
+```text
+DWH_STAGE2.<SRC_SCHEMA>#<TABLE>
+-> <SRC_SCHEMA>.<TABLE>
+```
+
+Examples:
+
+```text
+DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY
+```
+
+Means:
+
+```text
+StarRocks physical: S0090.TRADEPOINT_ONL_HISTORY
+preferred model: STG__S0090_TRADEPOINT_ONL_HISTORY
+source fallback: source('S0090', 'TRADEPOINT_ONL_HISTORY')
+```
+
+Example:
+
+```text
 DWH_STAGE2.S01#Z_CLIENT
 ```
 
-In StarRocks/source it is often:
+Means:
 
 ```text
-S01.Z_CLIENT
+StarRocks physical: S01.Z_CLIENT
+preferred model: STG__S01_Z_CLIENT
+source fallback: source('S01', 'Z_CLIENT')
 ```
 
-In dbt staging it is usually:
+Resolver order:
+
+1. manual overrides
+2. DWH_STAGE2 preferred STG__ model
+3. DWH_STAGE2 source fallback
+4. DWH_STAGE2 physical fallback + warning
+5. normal exact model match
+6. normal source match
+7. unresolved warning
+
+Strict matching:
+
+* only exact normalized match
+* case-insensitive exact match allowed
+* name/alias/identifier exact normalized match allowed
+
+Forbidden:
+
+* partial match
+* startswith
+* contains
+* fuzzy match
+* prefix match
+
+This is forbidden:
 
 ```text
-DWH_STAGE.STG__S01_Z_CLIENT
+DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY
+-> xref('STG__S0090_TRADEPOINT_ONL', 'DWH_STAGE')
 ```
 
-Therefore:
+because:
 
-If Oracle schema is `DWH_STAGE2`:
-
-1. `DWH_STAGE2` is not the real StarRocks/source schema; it is an Oracle staging wrapper.
-2. If the Oracle table contains `$` or `#`, split on the first separator:
-   `S0090$TRADEPOINT_ONL_HISTORY` -> source schema `S0090`, source table `TRADEPOINT_ONL_HISTORY`;
-   `S01#Z_CLIENT` -> source schema `S01`, source table `Z_CLIENT`.
-   This maps to StarRocks physical references:
-   `DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY` -> `S0090.TRADEPOINT_ONL_HISTORY`;
-   `DWH_STAGE2.S01#Z_CLIENT` -> `S01.Z_CLIENT`.
-3. Build preferred model:
-   `STG__<source_schema>_<source_table>`, for example `STG__S0090_TRADEPOINT_ONL_HISTORY`.
-4. Search manifest for this staging model first.
-5. If found, replace with:
-
-```sql
-{{ xref('STG__S01_Z_CLIENT', 'DWH_STAGE') }}
+```text
+TRADEPOINT_ONL != TRADEPOINT_ONL_HISTORY
 ```
 
-6. If the staging model is not found, search manifest sources by real source schema/table, not by `DWH_STAGE2`.
-   Match `source_name` or `schema` to source schema, and `name` or `identifier` to source table, case-insensitively and with normalized identifiers.
-7. If source is found, replace with the real manifest values:
+The resolver must prefer unresolved/physical fallback over a wrong partial match.
 
-```sql
-{{ source('S0090', 'TRADEPOINT_ONL_HISTORY') }}
+---
+
+## Raw table reference preservation
+
+The converter must not lose raw table references before resolver.
+
+Bad:
+
+```text
+DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY
+-> dwh_stage2.s0090_tradepoint_onl_history
 ```
 
-8. If neither model nor source is found, use the StarRocks physical fallback and warn:
-   `unresolved table: DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY`.
+before resolver.
 
-For schemas `OTHER` and `SS`:
+Good:
+resolver receives:
 
-* search manifest normally;
-* if model found, replace with:
-
-```sql
-{{ xref('<MODEL_NAME>', 'PROD') }}
+```text
+DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY
+DWH_STAGE2.S01#Z_CLIENT
 ```
 
-General xref schema rule:
+If sqlglot normalizes/destroys `$` or `#`, use raw SQL pre-scan before sqlglot.
 
-* if model name starts with `STG__` -> `DWH_STAGE`;
-* else -> `PROD`.
+Possible regex:
 
-If table cannot be resolved:
+```python
+TABLE_REF_RE = re.compile(
+    r"(?i)\b(from|join|update|into|merge\s+into)\s+([a-zA-Z0-9_$#]+(?:\.[a-zA-Z0-9_$#]+)?)"
+)
+```
 
-* keep physical table as-is;
-* add warning:
-  `unresolved table: <schema.table>`;
-* status chip should become warning/error style;
-* warning panel should list unresolved tables.
+Target table from INSERT INTO should be extracted, but not resolver-replaced as source.
 
-If source is found but model/xref is not found:
+---
 
-* do not silently replace with source unless explicitly configured;
-* add warning:
-  `source found but model/xref not found: <table>`.
+## Correct resolver logs
 
-Use placeholders for Jinja:
+Logs should show diagnostics like:
 
-* SQLGlot may quote Jinja incorrectly.
-* Use placeholders like `__XREF_0__`, then replace after SQL generation with:
-  `{{ xref('MODEL', 'SCHEMA') }}`.
+```text
+resolver input raw: DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY
+parsed DWH_STAGE2:
+  source_schema: S0090
+  source_table: TRADEPOINT_ONL_HISTORY
+  preferred_model: STG__S0090_TRADEPOINT_ONL_HISTORY
+model lookup:
+  candidate: STG__S0090_TRADEPOINT_ONL_HISTORY
+  found: false
+source lookup:
+  source_schema: S0090
+  source_table: TRADEPOINT_ONL_HISTORY
+  found: true
+resolved:
+  DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY -> source('S0090', 'TRADEPOINT_ONL_HISTORY')
+```
 
-Before claiming resolver/converter changes are complete, run:
+These wrong logs must not appear:
+
+```text
+resolved table dwh_stage2.s0090_tradepoint_onl_history -> dwh_stage2.s0090_tradepoint_onl_history
+resolved table dwh_stage2.s0090_tradepoint_onl -> xref('STG__S0090_TRADEPOINT_ONL', 'DWH_STAGE')
+resolved table s01.z_client -> s01.z_client
+```
+
+Correct examples:
+
+```text
+DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY -> xref('STG__S0090_TRADEPOINT_ONL_HISTORY', 'DWH_STAGE')
+```
+
+or:
+
+```text
+DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY -> source('S0090', 'TRADEPOINT_ONL_HISTORY')
+```
+
+and:
+
+```text
+DWH_STAGE2.S01#Z_CLIENT -> xref('STG__S01_Z_CLIENT', 'DWH_STAGE')
+```
+
+or:
+
+```text
+DWH_STAGE2.S01#Z_CLIENT -> source('S01', 'Z_CLIENT')
+```
+
+---
+
+## dbt command runner
+
+On Windows, `asyncio.create_subprocess_shell` failed with:
+
+```text
+NotImplementedError
+```
+
+Therefore do not use:
+
+* `asyncio.create_subprocess_shell`
+* `asyncio.create_subprocess_exec`
+
+Use blocking `subprocess.run`, but execute it in a separate thread:
+
+```python
+async def run_command_in_thread(...):
+    return await asyncio.to_thread(...)
+```
+
+dbt command runner:
+
+* uses `subprocess.run(..., shell=True, cwd=project_dir)`
+* captures stdout/stderr/return_code/error
+* logs full exception details:
+
+  * type
+  * str
+  * repr
+  * traceback
+
+dbt parse:
 
 ```bash
-python -m pytest sql_migrator/tests
-python sql_migrator/self_check.py
+dbt parse
 ```
 
-`self_check.py` must pass. It verifies exact DWH_STAGE2 STG/source resolution, forbids partial matches like `STG__S0090_TRADEPOINT_ONL` for `TRADEPOINT_ONL_HISTORY`, and rejects unresolved `dwh_stage2.*` / `s01.z_client` results for original DWH_STAGE2 references.
-It should print PASS lines for `clean_oracle_sql`, `clean_converted_sql`, target extraction, DWH_STAGE2 dollar/hash resolver, no partial match, YAML rendering, and base path persistence.
+dbt run:
 
-## Regression rules
+```bash
+dbt run --select <MODEL_NAME> --empty
+```
 
-Final SQL must never contain comments, Oracle hints, `commit`, or a trailing semicolon.
-`clean_converted_sql` is mandatory before returning `ConversionResult`.
-Resolver changes must not bypass cleanup; resolver output must also run `clean_converted_sql` after replacements.
-Every resolver fix must pass cleanup regression tests for hints, comments, commit, trailing semicolon, and removed `insert into`.
+Logs before run:
 
-## Warnings and visual error state
+* project_dir
+* cwd
+* command text
+* python executable
+* platform
+* PATH
+* started
 
-If conversion has warnings:
+Logs after run:
 
-* show warnings in Warnings panel;
-* status chip text:
-  `Converted with warnings`
-* status chip style should be reddish/warning, not huge banner.
+* return code
+* stdout
+* stderr
+* error
 
-If no warnings:
+UI must not show `Connection lost`.
 
-* status chip:
-  `Converted`
+---
 
-## Test SQL
+## Test requirements
 
-Use this test SQL:
+Tests should exist under:
 
-```sql
-insert /*+ append enable_parallel_dml parallel(20) */
-into other.dm$partners_sales$p1
-select
-    sysdate as s$change_date,
-    standard_hash(
-        standard_hash(t.org_bin, 'MD5') ||
-        standard_hash(t.client_id, 'MD5') ||
-        standard_hash(t.sale_month, 'MD5') ||
-        standard_hash(t.total_amount, 'MD5') ||
-        standard_hash(t.sale_type_name, 'MD5'),
-        'MD5'
-    ) as s$md5,
-    t.org_bin,
-    t.client_id,
-    t.sale_month,
-    t.sale_day,
-    t.sale_type_name,
-    t.total_amount,
-    t.operation_cnt,
-    t.last_operation_date,
-    t.rn
-from (
-    select
-        nvl(org.c_inn, 'N/A') as org_bin,
-        cl.id as client_id,
-        trunc(op.order_regdate, 'mm') as sale_month,
-        trunc(op.order_regdate) as sale_day,
-        decode(
-            op.sale_type,
-            'KaspiRed', 'RED',
-            'KaspiKredit', 'CREDIT',
-            'KaspiKzPayment', 'PAYMENT',
-            'OTHER'
-        ) as sale_type_name,
-        sum(nvl(op.amount, 0)) as total_amount,
-        count(*) as operation_cnt,
-        max(op.order_regdate) as last_operation_date,
-        row_number() over (
-            partition by org.c_inn, trunc(op.order_regdate, 'mm')
-            order by max(op.order_regdate) desc
-        ) as rn
-    from DWH_STAGE2.S01#Z_CLIENT org
-        join DWH_STAGE2.S0090$KB_OPERATION op
-            on op.org_id = org.id
-        left join SS.D$RFO_CLIENT_FL cl
-            on cl.bin = org.c_inn
-           and cl.s$end = date '3000-01-01'
-    where op.order_regdate >= add_months(trunc(sysdate, 'mm'), -3)
-      and op.order_regdate < trunc(sysdate)
-      and nvl(org.class_id, 'N') = 'CL_ORG'
-      and op.status = 'SUCCESS'
-      and org.c_inn is not null
-    group by
-        nvl(org.c_inn, 'N/A'),
-        cl.id,
-        trunc(op.order_regdate, 'mm'),
-        trunc(op.order_regdate),
-        decode(
-            op.sale_type,
-            'KaspiRed', 'RED',
-            'KaspiKredit', 'CREDIT',
-            'KaspiKzPayment', 'PAYMENT',
-            'OTHER'
-        )
-) t
-where t.rn = 1;
+```text
+sql_migrator/tests/
+```
 
-commit;
+Expected test areas:
+
+### Converter
+
+* removes Oracle hints
+* removes comments
+* removes commit
+* removes trailing semicolon
+* removes insert into
+* extracts target table
+* target schema handled separately
+* schema not included in model_name
+* detects unsupported Oracle syntax
+* detects Oracle KEEP aggregate
+
+### Resolver
+
+* DWH_STAGE2 `$` works
+* DWH_STAGE2 `#` works
+* STG__ lookup has priority
+* source fallback works
+* partial match forbidden
+* physical fallback correct
+* `dwh_stage2.*` does not remain in output for DWH_STAGE2 mapping
+
+### YAML
+
+* inline tags
+* no duplicate models
+* existing models preserved
+* new model appended
+* stable formatting
+
+### File utils
+
+* `ds$bin_restrictions$b` -> `DS_BIN_RESTRICTIONS_B`
+* `other.dm$partners_sales$p1` -> schema `other`, model `DM_PARTNERS_SALES_P1`, base `dm_partners_sales`
+
+### Command runner
+
+* uses `asyncio.to_thread`
+* does not use async subprocess
+* returns stdout/stderr/return_code/error
+* does not crash on failed command
+
+### State
+
+* last_base_path persists
+* Convert does not reset base_path
+* Clear does not reset base_path
+
+---
+
+## Self-check
+
+There should be:
+
+```text
+sql_migrator/self_check.py
+```
+
+It should run key checks without UI and print PASS/FAIL.
+
+Required checks:
+
+* clean_oracle_sql
+* clean_converted_sql
+* target extraction
+* DWH_STAGE2 dollar resolver
+* DWH_STAGE2 hash resolver
+* no partial match
+* yaml rendering
+* base_path persistence
+* detects Oracle KEEP aggregate
+* does not silently accept Oracle KEEP
+* normal SQL has no unsupported warnings
+
+If any check fails:
+
+* exit code 1
+
+Before saying work is done, run:
+
+```bash
+pytest sql_migrator/tests
+python sql_migrator/self_check.py
+python -m compileall sql_migrator
+```
+
+If checks fail, do not claim success.
+
+---
+
+## Refactoring policy
+
+Keep code simple.
+
+Preferred module responsibilities:
+
+```text
+converter.py
+- clean Oracle SQL
+- extract target table
+- convert Oracle to StarRocks/dbt SQL
+- apply resolver replacements
+- clean converted SQL
+- detect unsupported Oracle constructs
+
+dbt_resolver.py
+- read manifest
+- index models
+- index sources
+- resolve physical table references
+- parse DWH_STAGE2 references
+
+file_utils.py
+- normalize names
+- build model_name/base_object/file names
+- paths
+
+state.py
+- runtime state
+- persistent last_base_path
+
+command_runner.py
+- dbt parse/dbt run subprocess/thread execution
+
+app.py
+- UI only
+- handlers
+- state updates
+```
+
+Avoid:
+
+* giant functions
+* duplicate regex logic
+* unclear names
+* unused old async subprocess code
+* old `use_empty`
+* heavy business logic inside app.py
+* funny comments
+* misleading TODO comments
+
+Prefer clear names:
+
+* `clean_oracle_sql`
+* `clean_converted_sql`
+* `extract_target_table`
+* `convert_oracle_to_starrocks`
+* `resolve_table_reference`
+* `parse_dwh_stage2_reference`
+* `run_dbt_command`
+* `run_command_in_thread`
+
+Avoid unclear names:
+
+* `final_cleanup_sql`
+* `fix_sql`
+* `do_cleanup`
+* `res`
+* `tmp`
+* `x`
+* `data2`
+
+---
+
+## Current key bug history
+
+Bugs that must not return:
+
+1. dbt parse/run caused NiceGUI `Connection lost`.
+2. Windows async subprocess raised `NotImplementedError`.
+3. Base path reset to `dbt_fs/models` after Convert.
+4. `Use --empty` checkbox existed, but it should be always enabled and hidden.
+5. Resolver lost raw DWH_STAGE2 references.
+6. Resolver matched partial model `STG__S0090_TRADEPOINT_ONL` for `TRADEPOINT_ONL_HISTORY`.
+7. Resolver left `dwh_stage2.s0090_tradepoint_onl_history`.
+8. Resolver left `s01.z_client` instead of using raw `DWH_STAGE2.S01#Z_CLIENT`.
+9. Comments/hints/commit/trailing semicolon returned after resolver changes.
+10. Oracle KEEP aggregate was silently left as invalid StarRocks SQL.
+11. Logs/Warnigns grew downward too far; latest logs should appear at top and panels should scroll internally.
+
+---
+
+## Golden examples
+
+### Example 1
+
+Input target:
+
+```text
+DS$BIN_RESTRICTIONS$P
 ```
 
 Expected:
 
-* target table recognized:
-  `other.dm$partners_sales$p1`;
-* target_schema:
-  `other`;
-* model_name:
-  `DM_PARTNERS_SALES_P1`;
-* base_object:
-  `dm_partners_sales`;
-* SQL file:
-  `DM_PARTNERS_SALES_P1.sql`;
-* YAML file:
-  `_DM_PARTNERS_SALES_MODELS.yml`;
-* save dir:
-  `<project_dir>/models/dm_partners_sales`;
-* `insert into` removed;
-* hint removed;
-* `commit` removed;
-* `sysdate` replaced;
-* `standard_hash` replaced;
-* `nvl` replaced;
-* `trunc(..., 'mm')` replaced;
-* `add_months(..., -3)` replaced;
-* `DWH_STAGE2.S01#Z_CLIENT` tries `xref('STG__S01_Z_CLIENT', 'DWH_STAGE')`;
-* unresolved tables appear in Warnings.
+```text
+model_name: DS_BIN_RESTRICTIONS_P
+base_object: ds_bin_restrictions
+folder_name: ds_bin_restrictions
+sql_file_name: DS_BIN_RESTRICTIONS_P.sql
+yaml_file_name: _DS_BIN_RESTRICTIONS_MODELS.yml
+```
 
-## Work style
+### Example 2
 
-* Keep answers short.
-* Show only changed files.
-* Do not rewrite unrelated code.
-* Always update `context.md`.
-* If something is ambiguous, add warning instead of guessing silently.
+Raw source:
+
+```text
+DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY
+```
+
+Expected resolver:
+
+```text
+preferred model: STG__S0090_TRADEPOINT_ONL_HISTORY
+source fallback: source('S0090', 'TRADEPOINT_ONL_HISTORY')
+physical fallback: S0090.TRADEPOINT_ONL_HISTORY
+```
+
+Never:
+
+```text
+dwh_stage2.s0090_tradepoint_onl_history
+STG__S0090_TRADEPOINT_ONL
+```
+
+### Example 3
+
+Raw source:
+
+```text
+DWH_STAGE2.S01#Z_CLIENT
+```
+
+Expected resolver:
+
+```text
+preferred model: STG__S01_Z_CLIENT
+source fallback: source('S01', 'Z_CLIENT')
+physical fallback: S01.Z_CLIENT
+```
+
+Never:
+
+```text
+s01.z_client
+```
+
+### Example 4
+
+Oracle cleanup input:
+
+```sql
+insert /*+ append enable_parallel_dml parallel(20) */
+into DS$BIN_RESTRICTIONS$P
+select *
+from DWH_STAGE2.S01#Z_CLIENT;
+
+commit;
+```
+
+Expected converted SQL:
+
+* no `insert into`
+* no `/*+`
+* no comments
+* no `commit`
+* no trailing `;`
+
+### Example 5
+
+Unsupported Oracle KEEP:
+
+```sql
+replace(max(brand) keep(dense_rank last order by tt.updated), ' ')
+```
+
+Expected:
+
+* warning/error about unsupported Oracle KEEP aggregate
+* no silent success
+* no claim that SQL is fully valid StarRocks
+
+---
+
+## Final instruction
+
+Only update `sql_migrator/context.md`.
+
+Do not change code in this task.
+Do not refactor in this task.
+Do not run dbt in this task.

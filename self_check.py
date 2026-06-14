@@ -88,6 +88,41 @@ commit;
     failures += not check("trailing semicolon removed", not cleanup_result.sql.rstrip().endswith(";"), cleanup_result.sql)
     failures += not check("insert into removed", "insert into" not in cleanup_result.sql.lower(), cleanup_result.sql)
 
+    keep_sql = """
+insert into DS$BIN_RESTRICTIONS$P
+select replace(max(brand) keep(dense_rank last order by tt.updated), ' ') as brand
+from DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY tt;
+commit;
+"""
+    keep_result = convert_oracle_to_starrocks(keep_sql)
+    keep_warnings = "\n".join(keep_result.warnings)
+    failures += not check(
+        "detects Oracle KEEP aggregate",
+        "Oracle KEEP" in keep_warnings,
+        keep_warnings or keep_result.sql,
+    )
+    failures += not check(
+        "does not silently accept Oracle KEEP",
+        bool(keep_result.warnings),
+        keep_result.sql,
+    )
+
+    normal_result = convert_oracle_to_starrocks(
+        """
+insert into DS$BIN_RESTRICTIONS$P
+select coalesce(name, 'N/A') as name
+from DWH_STAGE2.S01#Z_CLIENT;
+"""
+    )
+    normal_warnings = "\n".join(normal_result.warnings)
+    failures += not check(
+        "normal SQL has no unsupported warnings",
+        "Oracle-only construct" not in normal_warnings
+        and "Oracle KEEP" not in normal_warnings
+        and "not supported" not in normal_warnings,
+        normal_warnings,
+    )
+
     with tempfile.TemporaryDirectory() as tmp:
         yaml_path = Path(tmp) / "_DM_PARTNERS_SALES_MODELS.yml"
         yaml_text, _ = build_or_update_model_yml(
