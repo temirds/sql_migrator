@@ -1,0 +1,10 @@
+project_dir: ../dbt_fs
+
+source_priority:
+  - model
+  - source
+
+manual_overrides:
+  # "S01.Z#CLIENT":
+  #   type: model
+  #   model_name: STG__S01_Z_CLIENT
