@@ -39,6 +39,14 @@ class ResolveSqlResult:
     logs: list[str]
 
 
+@dataclass
+class SourceRef:
+    source_name: str
+    name: str
+    identifier: str
+    schema: str
+
+
 def load_config(config_path: str | Path | None = None) -> dict:
     path = Path(config_path) if config_path else Path(__file__).with_name("config.yml")
     if not path.exists():
@@ -69,6 +77,31 @@ def _xref(model_name: str, schema: str | None = None) -> str:
     return "{{ xref('" + model_name + "', '" + xref_schema + "') }}"
 
 
+def _source(source_name: str, name: str) -> str:
+    return "{{ source('" + source_name + "', '" + name + "') }}"
+
+
+def parse_dwh_stage2_table(table: str) -> dict[str, str]:
+    clean = table.strip().replace("`", "").replace('"', "")
+    separator = "$" if "$" in clean else "#" if "#" in clean else ""
+
+    if separator:
+        source_schema, source_table = clean.split(separator, 1)
+    else:
+        source_schema = ""
+        source_table = clean
+
+    normalized_schema = normalize_relation_part(source_schema)
+    normalized_table = normalize_relation_part(source_table)
+    preferred_parts = [part for part in [normalized_schema, normalized_table] if part]
+
+    return {
+        "source_schema": normalized_schema,
+        "source_table": normalized_table,
+        "preferred_model": "STG__" + "_".join(preferred_parts),
+    }
+
+
 class DbtResolver:
     def __init__(self, project_dir: Path, config: dict):
         self.project_dir = project_dir
@@ -77,6 +110,7 @@ class DbtResolver:
         self.manifest_path = resolve_path(str(project_dir / "target" / "manifest.json"))
         self.models = self._load_models()
         self.sources = self._load_sources()
+        self.source_refs = self._load_source_refs()
         self.manifest_missing = not self.manifest_path.exists()
 
     def resolve_table(self, raw_table: str) -> ResolveResult:
@@ -106,8 +140,8 @@ class DbtResolver:
         normalized_table = normalize_relation_part(table)
 
         if normalized_schema == "DWH_STAGE2":
-            preferred_model = f"STG__{normalized_table}"
-            found = self._find_model(preferred_model)
+            dwh_table = parse_dwh_stage2_table(table)
+            found = self._find_model(dwh_table["preferred_model"])
             if found:
                 return ResolveResult(
                     raw_table=raw_table,
@@ -116,6 +150,18 @@ class DbtResolver:
                     kind="model",
                     model_name=found,
                     xref_schema="DWH_STAGE",
+                )
+
+            source = self._find_dwh_stage2_source(
+                dwh_table["source_schema"],
+                dwh_table["source_table"],
+            )
+            if source:
+                return ResolveResult(
+                    raw_table=raw_table,
+                    replacement=_source(source.source_name, source.name),
+                    found=True,
+                    kind="source",
                 )
 
         candidates = [
@@ -180,11 +226,10 @@ class DbtResolver:
     def _load_sources(self) -> dict[str, list[str]]:
         manifest = self._load_manifest()
         sources: dict[str, list[str]] = {}
-        for source in manifest.get("sources", {}).values():
-            source_name = source.get("source_name") or ""
-            name = source.get("name") or ""
-            identifier = source.get("identifier") or name
-            schema = source.get("schema") or source_name
+        for source in self._load_source_refs_from_manifest(manifest):
+            name = source.name
+            identifier = source.identifier
+            schema = source.schema
             keys = {name, identifier}
             if schema:
                 keys.add(f"{schema}.{name}")
@@ -192,6 +237,27 @@ class DbtResolver:
             for key in keys:
                 self._add_index(sources, key, name)
         return sources
+
+    def _load_source_refs(self) -> list[SourceRef]:
+        return self._load_source_refs_from_manifest(self._load_manifest())
+
+    def _load_source_refs_from_manifest(self, manifest: dict) -> list[SourceRef]:
+        refs: list[SourceRef] = []
+        for source in manifest.get("sources", {}).values():
+            source_name = source.get("source_name") or ""
+            name = source.get("name") or ""
+            identifier = source.get("identifier") or name
+            schema = source.get("schema") or source_name
+            if source_name and name:
+                refs.append(
+                    SourceRef(
+                        source_name=source_name,
+                        name=name,
+                        identifier=identifier,
+                        schema=schema,
+                    )
+                )
+        return refs
 
     def _add_index(self, index: dict[str, list[str]], key: str, value: str) -> None:
         if not key or not value:
@@ -229,6 +295,27 @@ class DbtResolver:
         unique = sorted(set(found))
         return unique[0] if len(unique) == 1 else None
 
+    def _find_dwh_stage2_source(self, source_schema: str, source_table: str) -> SourceRef | None:
+        if not source_schema or not source_table:
+            return None
+
+        matches: list[SourceRef] = []
+        for source in self.source_refs:
+            schema_matches = source.source_name.upper() == source_schema or normalize_relation_part(
+                source.schema
+            ) == source_schema
+            table_matches = (
+                source.name.upper() == source_table
+                or source.identifier.upper() == source_table
+                or normalize_relation_part(source.name) == source_table
+                or normalize_relation_part(source.identifier) == source_table
+            )
+            if schema_matches and table_matches:
+                matches.append(source)
+
+        unique = {(source.source_name, source.name): source for source in matches}
+        return next(iter(unique.values())) if len(unique) == 1 else None
+
 
 def resolve_tables(sql: str, project_dir: str, config: dict | None = None) -> ResolveSqlResult:
     config = config or load_config()
@@ -253,6 +340,8 @@ def resolve_tables(sql: str, project_dir: str, config: dict | None = None) -> Re
             logs.append(
                 f"resolved table {raw_name} -> xref('{result.model_name}', '{result.xref_schema}')"
             )
+        elif result.found and result.kind == "source":
+            logs.append(f"resolved table {raw_name} -> {result.replacement}")
         return f"{keyword} {result.replacement}"
 
     return ResolveSqlResult(sql=TABLE_RE.sub(replace, sql), warnings=warnings, logs=logs)

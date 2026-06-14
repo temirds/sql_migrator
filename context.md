@@ -423,17 +423,29 @@ Therefore:
 
 If Oracle schema is `DWH_STAGE2`:
 
-1. Normalize table name:
-   `S01#Z_CLIENT` -> `S01_Z_CLIENT`
-   `S01.Z_CLIENT` -> `S01_Z_CLIENT`
-2. Build preferred model:
-   `STG__S01_Z_CLIENT`
-3. Search manifest for this model first.
-4. If found, replace with:
+1. `DWH_STAGE2` is not the real StarRocks/source schema; it is an Oracle staging wrapper.
+2. If the Oracle table contains `$` or `#`, split on the first separator:
+   `S0090$TRADEPOINT_ONL_HISTORY` -> source schema `S0090`, source table `TRADEPOINT_ONL_HISTORY`;
+   `S01#Z_CLIENT` -> source schema `S01`, source table `Z_CLIENT`.
+3. Build preferred model:
+   `STG__<source_schema>_<source_table>`, for example `STG__S0090_TRADEPOINT_ONL_HISTORY`.
+4. Search manifest for this staging model first.
+5. If found, replace with:
 
 ```sql
 {{ xref('STG__S01_Z_CLIENT', 'DWH_STAGE') }}
 ```
+
+6. If the staging model is not found, search manifest sources by real source schema/table, not by `DWH_STAGE2`.
+   Match `source_name` or `schema` to source schema, and `name` or `identifier` to source table, case-insensitively and with normalized identifiers.
+7. If source is found, replace with the real manifest values:
+
+```sql
+{{ source('S0090', 'TRADEPOINT_ONL_HISTORY') }}
+```
+
+8. If neither model nor source is found, keep the physical table and warn:
+   `unresolved table: DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY`.
 
 For schemas `OTHER` and `SS`:
 
