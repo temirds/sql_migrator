@@ -39,9 +39,11 @@ airflow-repo/
       ...
   sql_migrator/
     app.py
+    command_runner.py
     converter.py
     dbt_resolver.py
     file_utils.py
+    self_check.py
     state.py
     config.yml
     .sql_migrator_state.json
@@ -497,6 +499,14 @@ python sql_migrator/self_check.py
 ```
 
 `self_check.py` must pass. It verifies exact DWH_STAGE2 STG/source resolution, forbids partial matches like `STG__S0090_TRADEPOINT_ONL` for `TRADEPOINT_ONL_HISTORY`, and rejects unresolved `dwh_stage2.*` / `s01.z_client` results for original DWH_STAGE2 references.
+It should print PASS lines for `clean_oracle_sql`, `clean_converted_sql`, target extraction, DWH_STAGE2 dollar/hash resolver, no partial match, YAML rendering, and base path persistence.
+
+## Regression rules
+
+Final SQL must never contain comments, Oracle hints, `commit`, or a trailing semicolon.
+`clean_converted_sql` is mandatory before returning `ConversionResult`.
+Resolver changes must not bypass cleanup; resolver output must also run `clean_converted_sql` after replacements.
+Every resolver fix must pass cleanup regression tests for hints, comments, commit, trailing semicolon, and removed `insert into`.
 
 ## Warnings and visual error state
 

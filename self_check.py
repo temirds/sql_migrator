@@ -5,8 +5,10 @@ from pathlib import Path
 import sys
 import tempfile
 
-from converter import convert_oracle_to_starrocks
+from converter import clean_converted_sql, clean_oracle_sql, convert_oracle_to_starrocks
 from dbt_resolver import resolve_tables
+from file_utils import build_or_update_model_yml
+import state
 
 
 def write_manifest(project_dir: Path, *, partial_only: bool = False) -> None:
@@ -67,6 +69,53 @@ def check(name: str, condition: bool, details: str = "") -> bool:
 
 def main() -> int:
     failures = 0
+    cleanup_sql = """
+-- top comment
+insert /*+ append enable_parallel_dml parallel(20) */ into DS$BIN_RESTRICTIONS$P
+select /* middle comment */ *
+from DWH_STAGE2.S01#Z_CLIENT -- source comment
+where 1 = 1;
+
+commit;
+"""
+    cleanup_result = convert_oracle_to_starrocks(cleanup_sql)
+    failures += not check("clean_oracle_sql", "commit" not in clean_oracle_sql(cleanup_sql).lower())
+    failures += not check("clean_converted_sql", not clean_converted_sql("select 1;\ncommit;").endswith(";"))
+    failures += not check("target extraction", cleanup_result.target_table == "DS$BIN_RESTRICTIONS$P")
+    failures += not check("comments removed", "--" not in cleanup_result.sql and "/*" not in cleanup_result.sql and "*/" not in cleanup_result.sql, cleanup_result.sql)
+    failures += not check("hints removed", "/*+" not in cleanup_result.sql and "append" not in cleanup_result.sql and "parallel" not in cleanup_result.sql, cleanup_result.sql)
+    failures += not check("commit removed", "commit" not in cleanup_result.sql.lower(), cleanup_result.sql)
+    failures += not check("trailing semicolon removed", not cleanup_result.sql.rstrip().endswith(";"), cleanup_result.sql)
+    failures += not check("insert into removed", "insert into" not in cleanup_result.sql.lower(), cleanup_result.sql)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        yaml_path = Path(tmp) / "_DM_PARTNERS_SALES_MODELS.yml"
+        yaml_text, _ = build_or_update_model_yml(
+            yaml_path,
+            "DM_PARTNERS_SALES_P1",
+            "DM_PARTNERS_SALES",
+            "other",
+        )
+        failures += not check(
+            "yaml rendering",
+            'tags: ["OTHER", "DM_PARTNERS_SALES"]' in yaml_text
+            and "description: ''" in yaml_text,
+            yaml_text,
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        original_path = state.PERSISTENT_STATE_PATH
+        state.PERSISTENT_STATE_PATH = Path(tmp) / ".sql_migrator_state.json"
+        try:
+            state.save_persistent_state({"last_base_path": "../dbt_fs/models/other"})
+            loaded_state, warning = state.load_persistent_state()
+            failures += not check(
+                "base_path persistence",
+                warning is None and loaded_state.get("last_base_path") == "../dbt_fs/models/other",
+            )
+        finally:
+            state.PERSISTENT_STATE_PATH = original_path
+
     with tempfile.TemporaryDirectory() as tmp:
         project_dir = Path(tmp)
         write_manifest(project_dir)

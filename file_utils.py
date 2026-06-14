@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-import os
 from pathlib import Path
-import shlex
-import subprocess
 
 import yaml
 
@@ -15,36 +11,6 @@ except ModuleNotFoundError:
 
 
 SQL_MIGRATOR_DIR = Path(__file__).resolve().parent
-
-
-@dataclass
-class CommandResult:
-    command_text: str
-    cwd: Path
-    return_code: int
-    stdout: str = ""
-    stderr: str = ""
-    error: str = ""
-
-    def to_log(self) -> str:
-        return "\n".join(
-            [
-                f"cwd: {self.cwd}",
-                f"command args: {self.command_text_args}",
-                f"command text: {self.command_text}",
-                f"return code: {self.return_code}",
-                "stdout:",
-                self.stdout.strip(),
-                "stderr:",
-                self.stderr.strip(),
-                "error:",
-                self.error.strip(),
-            ]
-        )
-
-    @property
-    def command_text_args(self) -> str:
-        return repr(shlex.split(self.command_text, posix=False))
 
 
 def resolve_path(path: str) -> Path:
@@ -221,66 +187,3 @@ def save_model_files(
     logs.extend(yaml_warnings)
     logs.append(f"Saved YAML: {yaml_path}")
     return logs, warnings
-
-
-def command_text(command: list[str]) -> str:
-    return " ".join(command)
-
-
-def format_command_log(result: CommandResult, command: list[str]) -> str:
-    return "\n".join(
-        [
-            f"cwd: {result.cwd}",
-            f"command args: {command!r}",
-            f"command text: {result.command_text}",
-            f"return code: {result.return_code}",
-            "stdout:",
-            result.stdout.strip(),
-            "stderr:",
-            result.stderr.strip(),
-            "error:",
-            result.error.strip(),
-        ]
-    )
-
-
-def run_command(command: list[str], cwd: Path) -> CommandResult:
-    command_as_text = command_text(command)
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            shell=False,
-        )
-        return CommandResult(
-            command_text=command_as_text,
-            cwd=cwd,
-            return_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
-    except FileNotFoundError:
-        return CommandResult(
-            command_text=command_as_text,
-            cwd=cwd,
-            return_code=1,
-            error=(
-                "dbt executable not found. Check that dbt is installed and available "
-                f"in PATH.\nPATH: {os.environ.get('PATH', '')}"
-            ),
-        )
-    except Exception as exc:
-        return CommandResult(
-            command_text=command_as_text,
-            cwd=cwd,
-            return_code=1,
-            error=f"dbt command error: {exc}",
-        )
-
-
-def run_dbt(project_dir: str, args: list[str]) -> tuple[int, str]:
-    command = ["dbt", *args]
-    result = run_command(command, resolve_path(project_dir))
-    return result.return_code, format_command_log(result, command)

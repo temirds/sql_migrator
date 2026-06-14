@@ -8,10 +8,10 @@ import re
 import yaml
 
 try:
-    from converter import normalize_name
+    from converter import clean_converted_sql, normalize_name
     from file_utils import resolve_path
 except ModuleNotFoundError:
-    from .converter import normalize_name
+    from .converter import clean_converted_sql, normalize_name
     from .file_utils import resolve_path
 
 
@@ -471,4 +471,4 @@ def resolve_tables(
                 logs.append(summary)
         return f"{keyword} {result.replacement}"
 
-    return ResolveSqlResult(sql=TABLE_RE.sub(replace, sql), warnings=warnings, logs=logs)
+    return ResolveSqlResult(sql=clean_converted_sql(TABLE_RE.sub(replace, sql)), warnings=warnings, logs=logs)

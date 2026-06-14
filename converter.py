@@ -96,8 +96,23 @@ def extract_insert_target(sql: str) -> tuple[str, str]:
     return match.group("table"), match.group("select")
 
 
-def pre_clean_sql(sql: str) -> tuple[str, str]:
-    sql = ORACLE_HINT_RE.sub("", sql)
+def strip_sql_noise(sql: str) -> str:
+    sql = re.sub(r"/\*\+.*?\*/", "", sql, flags=re.DOTALL)
+    sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
+    sql = re.sub(r"--[^\n\r]*", "", sql)
+    sql = re.sub(r"(?im)^\s*commit\s*;?\s*$", "", sql)
+    sql = re.sub(r"(?is)\bcommit\s*;?\s*$", "", sql)
+    sql = sql.strip()
+    sql = re.sub(r";+\s*$", "", sql)
+    return sql.strip()
+
+
+def clean_oracle_sql(sql: str) -> str:
+    return strip_sql_noise(sql)
+
+
+def extract_target_table(sql: str) -> tuple[str, str]:
+    sql = clean_oracle_sql(sql)
     statements = []
     target_table = ""
 
@@ -294,12 +309,16 @@ def post_clean_sql(sql: str) -> str:
     return sql
 
 
+def clean_converted_sql(sql: str) -> str:
+    return strip_sql_noise(sql)
+
+
 def convert_oracle_to_starrocks(sql: str) -> ConversionResult:
     result = ConversionResult()
     if not sql.strip():
         return result
 
-    cleaned_sql, target_table = pre_clean_sql(sql)
+    cleaned_sql, target_table = extract_target_table(sql)
     result.target_table = target_table
     if target_table:
         relation = parse_relation_name(target_table)
@@ -320,10 +339,12 @@ def convert_oracle_to_starrocks(sql: str) -> ConversionResult:
             for expression in expressions
             if expression is not None
         ]
-        result.sql = post_clean_sql(lower_sql_outside_strings(";\n\n".join(converted)))
+        result.sql = clean_converted_sql(
+            post_clean_sql(lower_sql_outside_strings(";\n\n".join(converted)))
+        )
         return result
     except Exception as exc:
-        result.sql = f"{cleaned_sql}\n\n/* Conversion error: {exc} */"
+        result.sql = clean_converted_sql(f"{cleaned_sql}\n\n/* Conversion error: {exc} */")
         result.warnings.append(f"Conversion error: {exc}")
         return result
 

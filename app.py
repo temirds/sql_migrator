@@ -4,7 +4,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from command_utils import format_command_log, format_command_start_log, run_shell_command_async
+from command_runner import format_command_log, format_command_start_log, run_command_in_thread
 from converter import convert_oracle_to_starrocks, format_sql
 from dbt_resolver import load_config, resolve_tables
 from file_utils import build_file_fields, resolve_path, save_model_files
@@ -79,7 +79,7 @@ def dbt_project_dir() -> Path:
 
 
 async def run_dbt_async(command_text: str, cwd: Path) -> tuple[int | None, str]:
-    result = await run_shell_command_async(command_text, cwd)
+    result = await run_command_in_thread(command_text, cwd)
     return result.return_code, format_command_log(result)
 
 

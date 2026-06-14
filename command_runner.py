@@ -20,7 +20,7 @@ class CommandResult:
     error: str | None = None
 
 
-def run_shell_command_sync(command_text: str, cwd: Path) -> CommandResult:
+def run_command_sync(command_text: str, cwd: Path) -> CommandResult:
     try:
         completed = subprocess.run(
             command_text,
@@ -54,8 +54,8 @@ def run_shell_command_sync(command_text: str, cwd: Path) -> CommandResult:
         )
 
 
-async def run_shell_command_async(command_text: str, cwd: Path) -> CommandResult:
-    return await asyncio.to_thread(run_shell_command_sync, command_text, cwd)
+async def run_command_in_thread(command_text: str, cwd: Path) -> CommandResult:
+    return await asyncio.to_thread(run_command_sync, command_text, cwd)
 
 
 def format_command_start_log(command_text: str, cwd: Path) -> str:
