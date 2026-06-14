@@ -39,7 +39,29 @@ def test_resolved_conversion_reports_unresolved_tables(tmp_path: Path) -> None:
     write_manifest(tmp_path)
     converted = convert_oracle_to_starrocks(ORACLE_SQL)
 
-    resolved = resolve_tables(converted.sql, str(tmp_path), {})
+    resolved = resolve_tables(converted.sql, str(tmp_path), {}, raw_sql=ORACLE_SQL)
 
     assert "{{ xref('STG__S01_Z_CLIENT', 'DWH_STAGE') }}" in resolved.sql
-    assert "unresolved table: unknown_schema.some_table" in resolved.warnings
+    assert "unresolved table: UNKNOWN_SCHEMA.SOME_TABLE" in resolved.warnings
+
+
+def test_converter_integration_uses_raw_dwh_stage2_references(tmp_path: Path) -> None:
+    raw_sql = """
+insert into DS$BIN_RESTRICTIONS$P
+select *
+from DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY h
+join DWH_STAGE2.S01#Z_CLIENT c
+  on c.id = h.client_id;
+"""
+    write_manifest(tmp_path, include_tradepoint_model=True, include_sources=True)
+    converted = convert_oracle_to_starrocks(raw_sql)
+
+    resolved = resolve_tables(converted.sql, str(tmp_path), {}, raw_sql=raw_sql)
+
+    assert "{{ xref('STG__S0090_TRADEPOINT_ONL_HISTORY', 'DWH_STAGE') }}" in resolved.sql
+    assert "{{ xref('STG__S01_Z_CLIENT', 'DWH_STAGE') }}" in resolved.sql
+    lowered = resolved.sql.lower()
+    assert "dwh_stage2.s0090_tradepoint_onl_history" not in lowered
+    assert "dwh_stage2.s0090_tradepoint_onl" not in lowered
+    assert "s01.z_client" not in lowered
+    assert "STG__S0090_TRADEPOINT_ONL'" not in resolved.sql

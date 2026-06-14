@@ -140,7 +140,7 @@ def update_yaml_file_name(event) -> None:
 
 def convert_sql() -> None:
     result = convert_oracle_to_starrocks(state.oracle_sql)
-    resolved = resolve_tables(result.sql, state.project_dir, config)
+    resolved = resolve_tables(result.sql, state.project_dir, config, raw_sql=state.oracle_sql)
 
     state.starrocks_sql = resolved.sql
     state.warnings = []

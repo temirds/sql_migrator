@@ -15,6 +15,7 @@ def write_manifest(
     *,
     include_s01_model: bool = True,
     include_tradepoint_model: bool = False,
+    include_tradepoint_partial_model: bool = False,
     include_sources: bool = False,
 ) -> Path:
     nodes = {}
@@ -51,6 +52,14 @@ def write_manifest(
             "alias": "STG__S0090_TRADEPOINT_ONL_HISTORY",
             "schema": "DWH_STAGE",
             "unique_id": "model.dbt_fs.STG__S0090_TRADEPOINT_ONL_HISTORY",
+        }
+    if include_tradepoint_partial_model:
+        nodes["model.dbt_fs.STG__S0090_TRADEPOINT_ONL"] = {
+            "resource_type": "model",
+            "name": "STG__S0090_TRADEPOINT_ONL",
+            "alias": "STG__S0090_TRADEPOINT_ONL",
+            "schema": "DWH_STAGE",
+            "unique_id": "model.dbt_fs.STG__S0090_TRADEPOINT_ONL",
         }
 
     sources = {}

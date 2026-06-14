@@ -399,6 +399,11 @@ If sqlglot fails:
 
 Need to replace physical tables with dbt `xref` using `target/manifest.json`.
 
+Resolver must use raw Oracle table references before SQLGlot normalization.
+Pre-scan the original Oracle SQL for physical references before `$`, `#`, `.`, and case are rewritten.
+Partial model matches are forbidden: no `startswith`, `contains`, prefix, substring, or best-effort partial matching.
+Only case-insensitive exact match and exact normalized match are allowed for model/source name, alias, and identifier.
+
 Important context:
 
 Oracle physical table example:
@@ -427,6 +432,9 @@ If Oracle schema is `DWH_STAGE2`:
 2. If the Oracle table contains `$` or `#`, split on the first separator:
    `S0090$TRADEPOINT_ONL_HISTORY` -> source schema `S0090`, source table `TRADEPOINT_ONL_HISTORY`;
    `S01#Z_CLIENT` -> source schema `S01`, source table `Z_CLIENT`.
+   This maps to StarRocks physical references:
+   `DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY` -> `S0090.TRADEPOINT_ONL_HISTORY`;
+   `DWH_STAGE2.S01#Z_CLIENT` -> `S01.Z_CLIENT`.
 3. Build preferred model:
    `STG__<source_schema>_<source_table>`, for example `STG__S0090_TRADEPOINT_ONL_HISTORY`.
 4. Search manifest for this staging model first.
@@ -444,7 +452,7 @@ If Oracle schema is `DWH_STAGE2`:
 {{ source('S0090', 'TRADEPOINT_ONL_HISTORY') }}
 ```
 
-8. If neither model nor source is found, keep the physical table and warn:
+8. If neither model nor source is found, use the StarRocks physical fallback and warn:
    `unresolved table: DWH_STAGE2.S0090$TRADEPOINT_ONL_HISTORY`.
 
 For schemas `OTHER` and `SS`:
@@ -480,6 +488,15 @@ Use placeholders for Jinja:
 * SQLGlot may quote Jinja incorrectly.
 * Use placeholders like `__XREF_0__`, then replace after SQL generation with:
   `{{ xref('MODEL', 'SCHEMA') }}`.
+
+Before claiming resolver/converter changes are complete, run:
+
+```bash
+python -m pytest sql_migrator/tests
+python sql_migrator/self_check.py
+```
+
+`self_check.py` must pass. It verifies exact DWH_STAGE2 STG/source resolution, forbids partial matches like `STG__S0090_TRADEPOINT_ONL` for `TRADEPOINT_ONL_HISTORY`, and rejects unresolved `dwh_stage2.*` / `s01.z_client` results for original DWH_STAGE2 references.
 
 ## Warnings and visual error state
 

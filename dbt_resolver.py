@@ -19,6 +19,10 @@ TABLE_RE = re.compile(
     r"\b(from|join)\s+(`?[\w$#]+`?(?:\.`?[\w$#]+`?)*)",
     re.IGNORECASE,
 )
+RAW_TABLE_REF_RE = re.compile(
+    r"\b(from|join|update|merge\s+into)\s+([a-zA-Z0-9_$#]+(?:\.[a-zA-Z0-9_$#]+)?)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -30,6 +34,7 @@ class ResolveResult:
     model_name: str = ""
     xref_schema: str = ""
     warning: str = ""
+    logs: list[str] | None = None
 
 
 @dataclass
@@ -45,6 +50,14 @@ class SourceRef:
     name: str
     identifier: str
     schema: str
+
+
+@dataclass
+class DwhStage2Ref:
+    source_schema: str
+    source_table: str
+    preferred_model: str
+    starrocks_physical: str
 
 
 def load_config(config_path: str | Path | None = None) -> dict:
@@ -82,7 +95,16 @@ def _source(source_name: str, name: str) -> str:
 
 
 def parse_dwh_stage2_table(table: str) -> dict[str, str]:
-    clean = table.strip().replace("`", "").replace('"', "")
+    parsed = parse_dwh_stage2_reference("DWH_STAGE2", table)
+    return {
+        "source_schema": parsed.source_schema,
+        "source_table": parsed.source_table,
+        "preferred_model": parsed.preferred_model,
+    }
+
+
+def parse_dwh_stage2_reference(raw_schema: str, raw_table: str) -> DwhStage2Ref:
+    clean = raw_table.strip().replace("`", "").replace('"', "")
     separator = "$" if "$" in clean else "#" if "#" in clean else ""
 
     if separator:
@@ -94,12 +116,18 @@ def parse_dwh_stage2_table(table: str) -> dict[str, str]:
     normalized_schema = normalize_relation_part(source_schema)
     normalized_table = normalize_relation_part(source_table)
     preferred_parts = [part for part in [normalized_schema, normalized_table] if part]
+    preferred_model = "STG__" + "_".join(preferred_parts)
+    if normalized_schema:
+        starrocks_physical = f"{normalized_schema}.{normalized_table}"
+    else:
+        starrocks_physical = normalized_table
 
-    return {
-        "source_schema": normalized_schema,
-        "source_table": normalized_table,
-        "preferred_model": "STG__" + "_".join(preferred_parts),
-    }
+    return DwhStage2Ref(
+        source_schema=normalized_schema,
+        source_table=normalized_table,
+        preferred_model=preferred_model,
+        starrocks_physical=starrocks_physical,
+    )
 
 
 class DbtResolver:
@@ -140,9 +168,25 @@ class DbtResolver:
         normalized_table = normalize_relation_part(table)
 
         if normalized_schema == "DWH_STAGE2":
-            dwh_table = parse_dwh_stage2_table(table)
-            found = self._find_model(dwh_table["preferred_model"])
+            dwh_table = parse_dwh_stage2_reference(schema or "", table)
+            logs = [
+                f"resolver input raw: {raw_table}",
+                "parsed DWH_STAGE2:",
+                f"  source_schema: {dwh_table.source_schema}",
+                f"  source_table: {dwh_table.source_table}",
+                f"  preferred_model: {dwh_table.preferred_model}",
+                "model lookup:",
+                f"  candidate: {dwh_table.preferred_model}",
+            ]
+            found = self._find_model(dwh_table.preferred_model)
+            logs.append(f"  found: {str(bool(found)).lower()}")
             if found:
+                logs.extend(
+                    [
+                        "resolved:",
+                        f"  {raw_table} -> xref('{found}', 'DWH_STAGE')",
+                    ]
+                )
                 return ResolveResult(
                     raw_table=raw_table,
                     replacement=_xref(found, "DWH_STAGE"),
@@ -150,19 +194,53 @@ class DbtResolver:
                     kind="model",
                     model_name=found,
                     xref_schema="DWH_STAGE",
+                    logs=logs,
                 )
 
-            source = self._find_dwh_stage2_source(
-                dwh_table["source_schema"],
-                dwh_table["source_table"],
+            logs.extend(
+                [
+                    "source lookup:",
+                    f"  source_schema: {dwh_table.source_schema}",
+                    f"  source_table: {dwh_table.source_table}",
+                ]
             )
+            source = self._find_dwh_stage2_source(
+                dwh_table.source_schema,
+                dwh_table.source_table,
+            )
+            logs.append(f"  found: {str(bool(source)).lower()}")
             if source:
+                logs.extend(
+                    [
+                        "resolved:",
+                        f"  {raw_table} -> source('{source.source_name}', '{source.name}')",
+                    ]
+                )
                 return ResolveResult(
                     raw_table=raw_table,
                     replacement=_source(source.source_name, source.name),
                     found=True,
                     kind="source",
+                    logs=logs,
                 )
+
+            logs.extend(
+                [
+                    "resolved:",
+                    f"  {raw_table} -> {dwh_table.starrocks_physical}",
+                ]
+            )
+            return ResolveResult(
+                raw_table=raw_table,
+                replacement=dwh_table.starrocks_physical,
+                found=False,
+                kind="unresolved",
+                warning=(
+                    f"unresolved table: {raw_table}, "
+                    f"fallback physical: {dwh_table.starrocks_physical}"
+                ),
+                logs=logs,
+            )
 
         candidates = [
             raw_table,
@@ -317,31 +395,80 @@ class DbtResolver:
         return next(iter(unique.values())) if len(unique) == 1 else None
 
 
-def resolve_tables(sql: str, project_dir: str, config: dict | None = None) -> ResolveSqlResult:
+def extract_raw_table_refs(raw_sql: str) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    for match in RAW_TABLE_REF_RE.finditer(raw_sql):
+        ref = match.group(2).strip().strip("`").strip('"')
+        key = ref.upper()
+        if key not in seen:
+            refs.append(ref)
+            seen.add(key)
+    return refs
+
+
+def _replacement_keys_for_raw_ref(raw_ref: str) -> set[str]:
+    keys = {normalize_relation_part(raw_ref)}
+    schema, table = parse_relation(raw_ref)
+    normalized_schema = normalize_relation_part(schema or "")
+    normalized_table = normalize_relation_part(table)
+
+    if normalized_schema == "DWH_STAGE2":
+        dwh_table = parse_dwh_stage2_reference(schema or "", table)
+        keys.add(normalize_relation_part(f"{schema}.{dwh_table.source_schema}_{dwh_table.source_table}"))
+        keys.add(normalize_relation_part(dwh_table.starrocks_physical))
+        keys.add(normalize_relation_part(f"{schema}.{normalized_table}"))
+    return keys
+
+
+def resolve_tables(
+    sql: str,
+    project_dir: str,
+    config: dict | None = None,
+    raw_sql: str | None = None,
+) -> ResolveSqlResult:
     config = config or load_config()
     resolver = DbtResolver(resolve_path(project_dir), config)
     warnings: list[str] = []
     logs: list[str] = []
     manifest_warning_added = False
+    raw_replacements: dict[str, ResolveResult] = {}
+
+    if raw_sql:
+        for raw_ref in extract_raw_table_refs(raw_sql):
+            result = resolver.resolve_table(raw_ref)
+            if result.logs:
+                logs.extend(result.logs)
+            if result.warning:
+                warnings.append(result.warning)
+            for key in _replacement_keys_for_raw_ref(raw_ref):
+                raw_replacements[key] = result
 
     def replace(match: re.Match) -> str:
         nonlocal manifest_warning_added
         keyword = match.group(1)
         raw_name = match.group(2).replace("`", "")
-        result = resolver.resolve_table(raw_name)
+        replacement_key = normalize_relation_part(raw_name)
+        result = raw_replacements.get(replacement_key)
+        if result is None:
+            result = resolver.resolve_table(raw_name)
+            if result.logs:
+                logs.extend(result.logs)
         if result.warning:
             if result.warning == "manifest.json not found, run dbt parse":
                 if not manifest_warning_added:
                     warnings.append(result.warning)
                     manifest_warning_added = True
-            else:
+            elif result.warning not in warnings:
                 warnings.append(result.warning)
         if result.found and result.kind == "model":
-            logs.append(
-                f"resolved table {raw_name} -> xref('{result.model_name}', '{result.xref_schema}')"
-            )
+            summary = f"{result.raw_table} -> xref('{result.model_name}', '{result.xref_schema}')"
+            if summary not in logs:
+                logs.append(summary)
         elif result.found and result.kind == "source":
-            logs.append(f"resolved table {raw_name} -> {result.replacement}")
+            summary = f"{result.raw_table} -> {result.replacement.strip('{} ')}"
+            if summary not in logs:
+                logs.append(summary)
         return f"{keyword} {result.replacement}"
 
     return ResolveSqlResult(sql=TABLE_RE.sub(replace, sql), warnings=warnings, logs=logs)
